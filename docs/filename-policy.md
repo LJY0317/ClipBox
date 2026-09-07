@@ -2,9 +2,9 @@
 
 ClipBox's default filenames favor human readability while the archive database retains canonical identities independently.
 
-Spaces are allowed and are the default. Modern desktop filesystems handle them reliably, and the CLI must use safe path handling instead of forcing shell-oriented filenames on users.
+Spaces are allowed and are the default. macOS handles them reliably, and the CLI must use safe path handling instead of forcing shell-oriented filenames on users.
 
-Underscores are used when present in source metadata or when replacing characters unsafe across supported operating systems. Title words are not converted to underscores by default.
+Underscores are used when present in source metadata or when replacing characters that are unsafe or troublesome in filenames. Title words are not converted to underscores by default.
 
 Planned defaults:
 

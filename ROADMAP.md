@@ -4,7 +4,7 @@
 
 - [x] Public/private data boundary
 - [x] Privacy-focused Git ignore rules and pre-commit audit scaffold
-- [x] Core/CLI workspace skeleton
+- [x] Native Swift core/CLI/SwiftUI workspace skeleton
 - [x] Download filename policy
 - [x] Portable archive/history design
 - [x] AI-agent-oriented custom adapter specification
@@ -14,7 +14,7 @@
 - [ ] SQLite archive schema and migrations
 - [ ] Stable archive identity (`site + canonical media ID`)
 - [ ] Download job model and status transitions
-- [ ] Default OS download directory discovery
+- [x] Default macOS Downloads/ClipBox directory discovery
 - [ ] Output path templating and sanitization
 - [ ] Format inventory and quality-selection model
 
@@ -46,10 +46,11 @@
 - [ ] `clipbox adapter doctor`
 - [ ] AI-agent guide and machine-readable adapter schema
 
-## Phase 5 - Desktop GUI
+## Phase 5 - Native macOS GUI
 
 - [ ] Shared-core integration
-- [ ] URL download view
+- [x] Initial native SwiftUI window and output-folder picker
+- [ ] Functional URL download view
 - [ ] Collection synchronization view
 - [ ] Output location picker
 - [ ] Quality/range controls
@@ -64,7 +65,10 @@
 - [ ] Safe CSV/XLSX import with identifiers treated as text
 - [ ] External storage awareness
 
-## Phase 7 - Web interfaces
+## Phase 7 - macOS distribution
 
-- [ ] Local web UI backed by the local core
-- [ ] Evaluate hosted public-URL downloader separately from authenticated collection sync
+- [ ] Xcode application target
+- [ ] App icon and application metadata
+- [ ] Code signing
+- [ ] Hardened Runtime and sandbox/entitlement review
+- [ ] Notarized `.app` / DMG release pipeline

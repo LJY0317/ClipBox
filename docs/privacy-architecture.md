@@ -6,7 +6,7 @@ The public repository may contain source, public adapters, generic adapter inter
 
 It must not contain personal/custom site domains or URLs, private adapters/profiles, cookies, session exports, authentication tokens, personal download history, personal storage paths, or unredacted private diagnostics.
 
-Runtime and private adapter data belongs in the operating system's application-data/configuration location, outside the Git checkout:
+Runtime and private adapter data belongs in the user's macOS Application Support/configuration location, outside the Git checkout:
 
 ```text
 ClipBox user data/

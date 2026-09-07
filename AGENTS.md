@@ -14,6 +14,7 @@ These rules apply to AI coding agents working on the public ClipBox repository.
 
 - Keep download, archive, format-selection, and adapter logic in the shared core.
 - CLI and GUI are first-class frontends; neither should duplicate download logic.
+- The product is currently macOS-only. Use Swift for the core and CLI, SwiftUI for the GUI, and AppKit selectively for macOS integrations that SwiftUI does not cover cleanly.
 - Treat `site + canonical media ID` as archive identity when a platform exposes a stable ID.
 - Do not use a local file's current presence as the sole indication that media was already downloaded.
 - Preserve archive migration and import/export portability.
@@ -21,6 +22,7 @@ These rules apply to AI coding agents working on the public ClipBox repository.
 ## Development
 
 - Prefer small, testable changes.
+- Keep the project buildable with Swift Package Manager unless an Xcode project is explicitly added for application signing, packaging, and release distribution.
 - Preserve existing user changes and avoid unrelated rewrites.
 - Add tests for filename normalization, archive identity, import/export, and adapter behavior as those modules are implemented.
 - Public adapter examples must not require personal credentials.
