@@ -24,6 +24,7 @@ These rules apply to AI coding agents working on the public ClipBox repository.
 - Prefer small, testable changes.
 - Keep the project buildable with Swift Package Manager unless an Xcode project is explicitly added for application signing, packaging, and release distribution.
 - Preserve existing user changes and avoid unrelated rewrites.
+- Write commit messages for meaningful changes at reviewable, PR-like quality: use a concise imperative subject and a descriptive body that records motivation, major implementation choices, validation performed, and noteworthy follow-up or limitations when relevant. Optimize Git history for later retrospection rather than terse one-line summaries.
 - Add tests for filename normalization, archive identity, import/export, and adapter behavior as those modules are implemented.
 - Public adapter examples must not require personal credentials.
 - Do not add generated downloads, history exports, databases, cookies, logs, or local configuration to Git.
