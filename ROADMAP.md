@@ -22,6 +22,7 @@
 
 ## Phase 2 - CLI
 
+- [x] `clipbox gui` for launching the installed native app from any terminal directory
 - [x] `clipbox download <url>`
 - [x] `clipbox formats <url>`
 - [x] `clipbox scan <source>` for initial YouTube authenticated collections
@@ -66,6 +67,8 @@
 - [ ] Manual quality selection and collection range controls
 - [ ] Download cancellation and failed-item retry actions
 - [x] Backup/restore UI
+- [x] Ad-hoc signed local `.app` packaging and development installer
+- [ ] Developer ID signing, notarization, release artifact automation, and polished app icon
 
 ## Phase 6 - Portability and storage
 

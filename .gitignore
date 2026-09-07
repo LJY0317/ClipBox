@@ -9,6 +9,7 @@ Thumbs.db
 # Swift / Xcode build artifacts
 .build/
 .swiftpm/
+dist/
 DerivedData/
 *.xcuserstate
 xcuserdata/

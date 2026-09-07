@@ -74,6 +74,18 @@ swift run --package-path "$HOME/LJY Projects/ClipBox" clipbox status
 swift run --package-path "$HOME/LJY Projects/ClipBox" ClipBoxApp
 ```
 
+For a normal local development install without `swift run`:
+
+```sh
+tools/install-dev.sh
+clipbox status
+clipbox gui
+```
+
+The installer puts an ad-hoc signed native app at `~/Applications/ClipBox.app` and a persistent CLI binary under ClipBox's Application Support directory, then links `clipbox` into a writable command directory already on `PATH` when possible. This is a local development package, not a Developer ID signed/notarized public release.
+
+`tools/uninstall-dev.sh` removes only that development app/CLI installation; it deliberately preserves archive history, preferences, backups, and private adapters.
+
 For isolated development/automation runs, `CLIPBOX_DATA_DIR` and `CLIPBOX_DOWNLOAD_DIR` can redirect runtime state and downloaded files without changing the normal macOS locations. `CLIPBOX_YTDLP_PATH`, `CLIPBOX_GALLERYDL_PATH`, `CLIPBOX_FFMPEG_PATH`, and `CLIPBOX_CURL_PATH` can inject explicit executable paths for testing or future application packaging.
 
 The macOS Command Line Tools are enough to build the current core, CLI, and SwiftUI executable. Full Xcode is required on a developer Mac for the local XCTest suite and will also be required later for the conventional signed/notarized `.app` release workflow. GitHub CI runs the test suite on a macOS/Xcode runner.

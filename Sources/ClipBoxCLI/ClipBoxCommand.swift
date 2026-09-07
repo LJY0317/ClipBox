@@ -41,6 +41,9 @@ struct ClipBoxCommand {
         case "paths":
             try printPaths(json: wantsJSON)
 
+        case "gui":
+            try launchGUI()
+
         case "status":
             let service = try ClipBoxService()
             let dependencies = await service.dependencyStatus()
@@ -589,6 +592,7 @@ struct ClipBoxCommand {
         print("")
         print("Usage:")
         print("  clipbox status [--json]")
+        print("  clipbox gui")
         print("  clipbox paths [--json]")
         print("  clipbox formats <url> [--browser <browser>] [--json]")
         print("  clipbox download <url> [--output <folder>] [--browser <browser>] [--force] [--json]")
@@ -708,6 +712,31 @@ struct ClipBoxCommand {
         encoder.outputFormatting = [.prettyPrinted, .sortedKeys, .withoutEscapingSlashes]
         let data = try encoder.encode(value)
         print(String(decoding: data, as: UTF8.self))
+    }
+
+    private static func launchGUI() throws {
+        let environment = ProcessInfo.processInfo.environment
+        let appDirectory = environment["CLIPBOX_APP_INSTALL_DIR"]
+            .map { NSString(string: $0).expandingTildeInPath }
+            ?? FileManager.default.homeDirectoryForCurrentUser
+                .appendingPathComponent("Applications", isDirectory: true)
+                .path
+        let appURL = URL(fileURLWithPath: appDirectory, isDirectory: true)
+            .appendingPathComponent("ClipBox.app", isDirectory: true)
+        guard FileManager.default.fileExists(atPath: appURL.path) else {
+            throw CLIError.invalidArgument(
+                "ClipBox.app is not installed at \(appURL.path). Run tools/install-dev.sh from the source checkout first."
+            )
+        }
+
+        let process = Process()
+        process.executableURL = URL(fileURLWithPath: "/usr/bin/open")
+        process.arguments = [appURL.path]
+        try process.run()
+        process.waitUntilExit()
+        guard process.terminationStatus == 0 else {
+            throw CLIError.invalidArgument("macOS could not open \(appURL.path)")
+        }
     }
 }
 
