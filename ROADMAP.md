@@ -69,8 +69,9 @@
 
 - [x] `.clipboxbackup` creation and restore
 - [x] Merge archive histories from multiple computers without downgrading downloaded records
-- [ ] JSONL/CSV/XLSX export
-- [ ] Safe CSV/XLSX import with identifiers treated as text
+- [x] JSONL/CSV/XLSX export
+- [x] Safe JSONL/CSV merge import with identifiers treated as text
+- [ ] XLSX merge import after validating edited-workbook string/shared-string handling
 - [ ] External storage awareness
 
 ## Phase 7 - macOS distribution

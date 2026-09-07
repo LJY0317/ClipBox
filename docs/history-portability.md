@@ -19,6 +19,12 @@ Merge is deliberately non-destructive. An incoming failed/discovered record cann
 
 Preferences are included for portability but are not restored by default because an old Mac's external-drive path may not exist on the new Mac. CLI/GUI restore can opt into restoring the saved download-folder preference.
 
-CSV, JSONL, and XLSX export/import are planned for interoperability. Platform IDs must be treated as strings so spreadsheet numeric precision cannot corrupt long identifiers.
+The implemented exchange formats are:
+
+- **XLSX export:** intended for Excel/manual review. Every cell is written as an OpenXML inline string, including `media_id` and `source_id`, so identifiers longer than Excel's numeric precision are not rounded.
+- **CSV export/import:** intended for broad interoperability. Export quotes all fields, includes a UTF-8 BOM, and prefixes formula-looking values so untrusted titles/metadata cannot execute as spreadsheet formulas when opened. ClipBox reverses only that protection marker when re-importing its CSV.
+- **JSONL export/import:** intended for machine-readable interchange while preserving IDs and metadata without spreadsheet interpretation.
+
+CSV and JSONL imports merge through the same archive rules as backup restore rather than replacing the current database. XLSX import is intentionally not enabled yet: spreadsheet software may rewrite string cells into shared-string or numeric cells, and ClipBox should explicitly validate those cases before accepting edited workbooks.
 
 The recommended full-fidelity migration path remains `.clipboxbackup`.

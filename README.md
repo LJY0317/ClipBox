@@ -32,6 +32,7 @@ Its core idea is simple: download media once, remember it permanently, and keep 
 - Portable `.clipboxbackup` history creation and merge restore from both the CLI and macOS Settings UI.
 - YouTube Liked Videos and Watch Later preview/sync using a user-selected local browser session; already-downloaded media is skipped from the SQLite archive even if its file has moved elsewhere.
 - X Likes and Bookmarks preview/sync through `gallery-dl`, with each native video tracked by its media ID so multi-video posts remain separate archive items.
+- Human-readable history export to XLSX/CSV/JSONL, plus merge import from CSV/JSONL. XLSX identifiers are emitted as text cells to preserve long platform IDs exactly.
 
 `yt-dlp`, `gallery-dl`, and `ffmpeg` are currently external runtime dependencies. ClipBox detects them in `PATH` and common Homebrew locations. A future packaging phase will decide whether the release app should bundle/manage these dependencies or continue to use user-installed copies.
 
@@ -54,6 +55,8 @@ swift run clipbox scan youtube liked --browser safari --limit 100
 swift run clipbox sync youtube watch-later --browser safari --dry-run
 swift run clipbox scan x bookmarks --browser safari --limit 100
 swift run clipbox sync x likes --username '<handle>' --browser safari --dry-run
+swift run clipbox history export "$HOME/Downloads/ClipBox History.xlsx"
+swift run clipbox history import "$HOME/Downloads/ClipBox History.csv"
 swift run ClipBoxApp
 ```
 

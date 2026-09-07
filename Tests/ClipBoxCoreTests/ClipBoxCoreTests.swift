@@ -357,6 +357,76 @@ final class ClipBoxCoreTests: XCTestCase {
         }
     }
 
+    func testHistoryExchangePreservesLargeIDsAndSpreadsheetTextSafety() async throws {
+        let temp = try makeTemporaryDirectory()
+        defer { try? FileManager.default.removeItem(at: temp) }
+
+        let sourceStore = try ArchiveStore(databaseURL: temp.appendingPathComponent("exchange-source.sqlite3"))
+        let media = MediaMetadata(
+            site: "twitter",
+            mediaID: "1965423400123456789",
+            sourceID: "1965423456789012345",
+            inputURL: "https://x.com/ExampleUser/status/1965423456789012345",
+            webpageURL: "https://x.com/ExampleUser/status/1965423456789012345",
+            title: "=HYPERLINK(\"https://example.invalid\",\"not a formula\")",
+            creator: "ExampleUser",
+            uploadDate: "20260908",
+            width: 1920,
+            height: 1080,
+            formatID: "http-2176"
+        )
+        try await sourceStore.record(
+            media: media,
+            status: .downloaded,
+            outputPath: "/Volumes/Archive/Example [1965423400123456789].mp4"
+        )
+
+        let exchange = try HistoryExchangeService(archive: sourceStore)
+        let csvURL = temp.appendingPathComponent("history.csv")
+        let jsonlURL = temp.appendingPathComponent("history.jsonl")
+        let xlsxURL = temp.appendingPathComponent("history.xlsx")
+
+        let csvResult = try await exchange.export(to: csvURL, format: .csv)
+        let jsonlResult = try await exchange.export(to: jsonlURL, format: .jsonl)
+        let xlsxResult = try await exchange.export(to: xlsxURL, format: .xlsx)
+        XCTAssertEqual(csvResult.recordCount, 1)
+        XCTAssertEqual(jsonlResult.recordCount, 1)
+        XCTAssertEqual(xlsxResult.recordCount, 1)
+
+        let csvText = try String(contentsOf: csvURL, encoding: .utf8)
+        XCTAssertTrue(csvText.contains("1965423400123456789"))
+        XCTAssertTrue(csvText.contains("'=HYPERLINK"))
+
+        let unzip = URL(fileURLWithPath: "/usr/bin/unzip")
+        let sheetResult = try ProcessRunner.run(
+            executable: unzip,
+            arguments: ["-p", xlsxURL.path, "xl/worksheets/sheet1.xml"]
+        )
+        XCTAssertEqual(sheetResult.exitCode, 0)
+        XCTAssertTrue(sheetResult.stdout.contains("t=\"inlineStr\""))
+        XCTAssertTrue(sheetResult.stdout.contains("1965423400123456789"))
+
+        let csvStore = try ArchiveStore(databaseURL: temp.appendingPathComponent("csv-import.sqlite3"))
+        let csvImporter = try HistoryExchangeService(archive: csvStore)
+        let csvImport = try await csvImporter.importHistory(from: csvURL)
+        XCTAssertEqual(csvImport.recordsAdded, 1)
+        let csvRecord = try await csvStore.record(
+            identity: ArchiveIdentity(site: "twitter", mediaID: "1965423400123456789")
+        )
+        XCTAssertEqual(csvRecord?.sourceID, "1965423456789012345")
+        XCTAssertEqual(csvRecord?.title, "=HYPERLINK(\"https://example.invalid\",\"not a formula\")")
+
+        let jsonStore = try ArchiveStore(databaseURL: temp.appendingPathComponent("json-import.sqlite3"))
+        let jsonImporter = try HistoryExchangeService(archive: jsonStore)
+        let jsonImport = try await jsonImporter.importHistory(from: jsonlURL)
+        XCTAssertEqual(jsonImport.recordsAdded, 1)
+        let jsonRecord = try await jsonStore.record(
+            identity: ArchiveIdentity(site: "twitter", mediaID: "1965423400123456789")
+        )
+        XCTAssertEqual(jsonRecord?.mediaID, "1965423400123456789")
+        XCTAssertEqual(jsonRecord?.status, .downloaded)
+    }
+
     private func makeTemporaryDirectory() throws -> URL {
         let url = FileManager.default.temporaryDirectory
             .appendingPathComponent("ClipBoxTests-\(UUID().uuidString)", isDirectory: true)

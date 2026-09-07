@@ -195,6 +195,16 @@ struct ClipBoxCommand {
 
     private static func runHistory(arguments: [String], json: Bool) async throws {
         var arguments = arguments
+        if let subcommand = arguments.first, subcommand == "export" || subcommand == "import" {
+            arguments.removeFirst()
+            try await runHistoryExchange(
+                subcommand: subcommand,
+                arguments: arguments,
+                json: json
+            )
+            return
+        }
+
         let rawLimit = try removeOption("--limit", from: &arguments)
         let limit = try rawLimit.map {
             guard let parsed = Int($0), parsed > 0 else {
@@ -219,6 +229,65 @@ struct ClipBoxCommand {
             let title = record.title ?? "(untitled)"
             let timestamp = record.downloadedAt ?? record.firstSeenAt
             print("\(timestamp)\t\(record.status.rawValue)\t\(record.site):\(record.mediaID)\t\(title)")
+        }
+    }
+
+    private static func runHistoryExchange(
+        subcommand: String,
+        arguments: [String],
+        json: Bool
+    ) async throws {
+        var arguments = arguments
+        let rawFormat = try removeOption("--format", from: &arguments)
+        let format: HistoryExchangeFormat?
+        if let rawFormat {
+            guard let parsed = HistoryExchangeFormat(rawValue: rawFormat.lowercased()) else {
+                throw CLIError.invalidArgument("--format must be jsonl, csv, or xlsx")
+            }
+            format = parsed
+        } else {
+            format = nil
+        }
+
+        guard let path = arguments.first else {
+            throw CLIError.missingArgument(
+                "Usage: clipbox history \(subcommand) <file> [--format <jsonl|csv|xlsx>] [--json]"
+            )
+        }
+        guard arguments.count == 1 else {
+            throw CLIError.invalidArgument("Unexpected history \(subcommand) arguments: \(arguments.dropFirst().joined(separator: " "))")
+        }
+
+        let fileURL = URL(
+            fileURLWithPath: NSString(string: path).expandingTildeInPath,
+            isDirectory: false
+        )
+        let service = try HistoryExchangeService()
+
+        switch subcommand {
+        case "export":
+            let result = try await service.export(to: fileURL, format: format)
+            if json {
+                try printJSON(result)
+            } else {
+                print("History exported")
+                print("  format\t\(result.format.rawValue)")
+                print("  records\t\(result.recordCount)")
+                print("  file\t\(result.path)")
+            }
+        case "import":
+            let result = try await service.importHistory(from: fileURL, format: format)
+            if json {
+                try printJSON(result)
+            } else {
+                print("History imported by merge")
+                print("  format\t\(result.format.rawValue)")
+                print("  processed\t\(result.recordsProcessed)")
+                print("  newly-added\t\(result.recordsAdded)")
+                print("  final-records\t\(result.finalRecordCount)")
+            }
+        default:
+            throw CLIError.invalidArgument("Unknown history exchange command: \(subcommand)")
         }
     }
 
@@ -368,6 +437,8 @@ struct ClipBoxCommand {
         print("  clipbox scan x likes --username <handle> [--browser safari] [--limit <n>|--all] [--json]")
         print("  clipbox sync x <bookmarks|likes> [--username <handle>] [--browser safari] [--limit <n>|--all] [--dry-run] [--output <folder>] [--json]")
         print("  clipbox history [--limit <n>] [--json]")
+        print("  clipbox history export <file.{jsonl|csv|xlsx}> [--format <format>] [--json]")
+        print("  clipbox history import <file.{jsonl|csv}> [--format <format>] [--json]")
         print("  clipbox backup create [file.clipboxbackup] [--json]")
         print("  clipbox backup restore <file.clipboxbackup> [--restore-preferences] [--json]")
         print("  clipbox config show [--json]")
