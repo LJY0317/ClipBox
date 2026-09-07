@@ -20,14 +20,34 @@ Its core idea is simple: download media once, remember it permanently, and keep 
 - `clipbox` CLI for people, scripts, and AI agents.
 - Native SwiftUI macOS GUI for interactive use.
 
+## Current development features
+
+- SQLite archive history stored outside the repository in the user's Application Support directory.
+- Duplicate detection by `site + canonical media ID`, independent of whether the downloaded file still exists locally.
+- Persistent default download-folder preference, initially `~/Downloads/ClipBox`.
+- `yt-dlp`-backed public URL inspection and best-quality download orchestration without ClipBox intentionally re-encoding video.
+- `ffmpeg` and `yt-dlp` dependency diagnostics.
+- CLI commands for status, format inspection, URL download, recent history, paths, and output-folder configuration.
+- SwiftUI download screen with URL analysis, available-format preview, output-folder selection, download status, and archive history.
+
+`yt-dlp` is currently an external runtime dependency. ClipBox detects it in `PATH` and common Homebrew locations. A future packaging phase will decide whether the release app should bundle/manage this dependency or continue to use a user-installed copy.
+
 ## Development
 
 ClipBox currently uses Swift Package Manager:
 
 ```sh
 swift build
+swift run clipbox status
 swift run clipbox paths
 swift run ClipBoxApp
+```
+
+From another working directory, provide the package path explicitly:
+
+```sh
+swift run --package-path "$HOME/LJY Projects/ClipBox" clipbox status
+swift run --package-path "$HOME/LJY Projects/ClipBox" ClipBoxApp
 ```
 
 The macOS Command Line Tools are enough to build the current core, CLI, and SwiftUI executable. Full Xcode is required on a developer Mac for the local XCTest suite and will also be required later for the conventional signed/notarized `.app` release workflow. GitHub CI runs the test suite on a macOS/Xcode runner.

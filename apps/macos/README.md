@@ -11,3 +11,5 @@ swift run ClipBoxApp
 ```
 
 The current macOS Command Line Tools installation is sufficient for `swift build` and running the core/CLI/SwiftUI executable. Full Xcode is required for the local XCTest suite and for the conventional signed/notarized `.app` distribution target that will be added once the core download workflow is stable.
+
+The current development UI can inspect URLs, preview extracted formats, choose and persist a download destination, trigger best-quality downloads, and show recent archive history when `yt-dlp` is available.

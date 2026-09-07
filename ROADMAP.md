@@ -11,22 +11,27 @@
 
 ## Phase 1 - Core archive engine
 
-- [ ] SQLite archive schema and migrations
-- [ ] Stable archive identity (`site + canonical media ID`)
-- [ ] Download job model and status transitions
+- [x] SQLite archive schema and initial migration
+- [x] Stable archive identity (`site + canonical media ID`)
+- [x] Download status transitions (`downloading`, `downloaded`, `failed`)
 - [x] Default macOS Downloads/ClipBox directory discovery
-- [ ] Output path templating and sanitization
-- [ ] Format inventory and quality-selection model
+- [x] Human-readable output template with stable media ID
+- [x] Format inventory and best-quality selection through the extraction engine
+- [ ] Versioned schema migration framework beyond schema version 1
+- [ ] Rich filename-template customization UI/CLI
 
 ## Phase 2 - CLI
 
-- [ ] `clipbox download <url>`
-- [ ] `clipbox formats <url>`
+- [x] `clipbox download <url>`
+- [x] `clipbox formats <url>`
 - [ ] `clipbox scan <source>`
 - [ ] `clipbox sync <site> <collection>`
-- [ ] `clipbox history ...`
+- [x] `clipbox history ...` (initial recent-history view)
 - [ ] `clipbox backup ...`
-- [ ] `--json`, `--dry-run`, `--output`, date/range options
+- [x] `clipbox status`, `paths`, and output-folder configuration
+- [x] `--json` for current machine-readable commands
+- [x] `--output` and `--force` for URL downloads
+- [ ] `--dry-run`, date/range options for collection sync
 
 ## Phase 3 - Public adapters
 
@@ -48,13 +53,15 @@
 
 ## Phase 5 - Native macOS GUI
 
-- [ ] Shared-core integration
+- [x] Shared-core integration
 - [x] Initial native SwiftUI window and output-folder picker
-- [ ] Functional URL download view
+- [x] Functional URL analysis/download view
 - [ ] Collection synchronization view
-- [ ] Output location picker
-- [ ] Quality/range controls
-- [ ] Progress, history, failure, and retry views
+- [x] Persisted output location picker
+- [x] Best-quality default and format inventory preview
+- [x] Basic progress, error, and archive-history views
+- [ ] Manual quality selection and collection range controls
+- [ ] Download cancellation and failed-item retry actions
 - [ ] Backup/restore UI
 
 ## Phase 6 - Portability and storage

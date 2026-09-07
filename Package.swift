@@ -13,7 +13,12 @@ let package = Package(
         .executable(name: "ClipBoxApp", targets: ["ClipBoxApp"])
     ],
     targets: [
-        .target(name: "ClipBoxCore"),
+        .target(
+            name: "ClipBoxCore",
+            linkerSettings: [
+                .linkedLibrary("sqlite3")
+            ]
+        ),
         .executableTarget(
             name: "ClipBoxCLI",
             dependencies: ["ClipBoxCore"]
