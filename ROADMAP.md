@@ -66,8 +66,8 @@
 
 ## Phase 6 - Portability and storage
 
-- [ ] `.clipboxbackup` creation and restore
-- [ ] Merge archive histories from multiple computers
+- [x] `.clipboxbackup` creation and restore
+- [x] Merge archive histories from multiple computers without downgrading downloaded records
 - [ ] JSONL/CSV/XLSX export
 - [ ] Safe CSV/XLSX import with identifiers treated as text
 - [ ] External storage awareness

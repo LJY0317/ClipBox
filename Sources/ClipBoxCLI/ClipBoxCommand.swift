@@ -69,6 +69,9 @@ struct ClipBoxCommand {
         case "history":
             try await runHistory(arguments: arguments, json: wantsJSON)
 
+        case "backup":
+            try await runBackup(arguments: arguments, json: wantsJSON)
+
         case "config":
             try runConfig(arguments: arguments, json: wantsJSON)
 
@@ -139,6 +142,63 @@ struct ClipBoxCommand {
             let title = record.title ?? "(untitled)"
             let timestamp = record.downloadedAt ?? record.firstSeenAt
             print("\(timestamp)\t\(record.status.rawValue)\t\(record.site):\(record.mediaID)\t\(title)")
+        }
+    }
+
+    private static func runBackup(arguments: [String], json: Bool) async throws {
+        var arguments = arguments
+        let subcommand = arguments.first ?? "create"
+        if !arguments.isEmpty {
+            arguments.removeFirst()
+        }
+
+        switch subcommand {
+        case "create":
+            let destination = arguments.first.map {
+                URL(
+                    fileURLWithPath: NSString(string: $0).expandingTildeInPath,
+                    isDirectory: false
+                )
+            }
+            let service = try BackupService()
+            let result = try await service.createBackup(at: destination)
+            if json {
+                try printJSON(result)
+            } else {
+                print("Backup created")
+                print("  records\t\(result.recordCount)")
+                print("  file\t\(result.path)")
+            }
+
+        case "restore":
+            let restorePreferences = removeFlag("--restore-preferences", from: &arguments)
+            guard let source = arguments.first else {
+                throw CLIError.missingArgument(
+                    "Usage: clipbox backup restore <file.clipboxbackup> [--restore-preferences] [--json]"
+                )
+            }
+            let sourceURL = URL(
+                fileURLWithPath: NSString(string: source).expandingTildeInPath,
+                isDirectory: false
+            )
+            let service = try BackupService()
+            let result = try await service.restoreBackup(
+                from: sourceURL,
+                restorePreferences: restorePreferences
+            )
+            if json {
+                try printJSON(result)
+            } else {
+                print("Backup restored by merge")
+                print("  backup-records\t\(result.backupRecordCount)")
+                print("  processed\t\(result.recordsProcessed)")
+                print("  newly-added\t\(result.recordsAdded)")
+                print("  final-records\t\(result.finalRecordCount)")
+                print("  preferences-restored\t\(result.preferencesRestored ? "yes" : "no")")
+            }
+
+        default:
+            throw CLIError.invalidArgument("Unknown backup command: \(subcommand)")
         }
     }
 
@@ -225,6 +285,8 @@ struct ClipBoxCommand {
         print("  clipbox formats <url> [--json]")
         print("  clipbox download <url> [--output <folder>] [--force] [--json]")
         print("  clipbox history [--limit <n>] [--json]")
+        print("  clipbox backup create [file.clipboxbackup] [--json]")
+        print("  clipbox backup restore <file.clipboxbackup> [--restore-preferences] [--json]")
         print("  clipbox config show [--json]")
         print("  clipbox config output <folder|default>")
         print("  clipbox --version")

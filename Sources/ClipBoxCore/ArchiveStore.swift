@@ -134,6 +134,175 @@ public actor ArchiveStore {
         return records
     }
 
+    public func allRecords() throws -> [ArchiveRecord] {
+        let sql = """
+        SELECT site, media_id, source_id, collection_name, source_url, creator, title,
+               published_at, first_seen_at, downloaded_at, width, height, fps,
+               video_codec, audio_codec, format_id, output_path, status, last_error
+        FROM media
+        ORDER BY site, media_id
+        """
+        let statement = try prepare(sql)
+        defer { sqlite3_finalize(statement) }
+
+        var records: [ArchiveRecord] = []
+        while true {
+            let step = sqlite3_step(statement)
+            if step == SQLITE_DONE {
+                break
+            }
+            guard step == SQLITE_ROW else {
+                throw currentError()
+            }
+            records.append(decodeRecord(statement))
+        }
+        return records
+    }
+
+    public func quickIntegrityCheck() throws -> Bool {
+        let statement = try prepare("PRAGMA quick_check")
+        defer { sqlite3_finalize(statement) }
+        guard sqlite3_step(statement) == SQLITE_ROW else {
+            throw currentError()
+        }
+        return text(statement, 0)?.lowercased() == "ok"
+    }
+
+    public func createSnapshot(at destinationURL: URL) throws {
+        try FileManager.default.createDirectory(
+            at: destinationURL.deletingLastPathComponent(),
+            withIntermediateDirectories: true
+        )
+        if FileManager.default.fileExists(atPath: destinationURL.path) {
+            try FileManager.default.removeItem(at: destinationURL)
+        }
+
+        var destinationDatabase: OpaquePointer?
+        let flags = SQLITE_OPEN_CREATE | SQLITE_OPEN_READWRITE | SQLITE_OPEN_FULLMUTEX
+        let openResult = sqlite3_open_v2(destinationURL.path, &destinationDatabase, flags, nil)
+        guard openResult == SQLITE_OK, let destinationDatabase else {
+            let message = destinationDatabase.map { String(cString: sqlite3_errmsg($0)) } ?? "unknown SQLite error"
+            if let destinationDatabase {
+                sqlite3_close(destinationDatabase)
+            }
+            throw ArchiveStoreError.openFailed(message)
+        }
+        defer { sqlite3_close(destinationDatabase) }
+
+        guard let backup = sqlite3_backup_init(
+            destinationDatabase,
+            "main",
+            connection.handle,
+            "main"
+        ) else {
+            throw ArchiveStoreError.executionFailed(String(cString: sqlite3_errmsg(destinationDatabase)))
+        }
+
+        let stepResult = sqlite3_backup_step(backup, -1)
+        let finishResult = sqlite3_backup_finish(backup)
+        guard stepResult == SQLITE_DONE, finishResult == SQLITE_OK else {
+            throw ArchiveStoreError.executionFailed(String(cString: sqlite3_errmsg(destinationDatabase)))
+        }
+    }
+
+    public func createSnapshotAndRecords(at destinationURL: URL) throws -> [ArchiveRecord] {
+        try createSnapshot(at: destinationURL)
+        return try allRecords()
+    }
+
+    @discardableResult
+    public func importRecords(_ records: [ArchiveRecord]) throws -> Int {
+        guard !records.isEmpty else { return 0 }
+
+        let sql = """
+        INSERT INTO media (
+            site, media_id, source_id, collection_name, source_url, creator, title,
+            published_at, first_seen_at, downloaded_at, width, height, fps,
+            video_codec, audio_codec, format_id, output_path, status, last_error
+        ) VALUES (
+            ?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19
+        )
+        ON CONFLICT(site, media_id) DO UPDATE SET
+            source_id = COALESCE(excluded.source_id, media.source_id),
+            collection_name = COALESCE(excluded.collection_name, media.collection_name),
+            source_url = COALESCE(excluded.source_url, media.source_url),
+            creator = COALESCE(excluded.creator, media.creator),
+            title = COALESCE(excluded.title, media.title),
+            published_at = COALESCE(excluded.published_at, media.published_at),
+            first_seen_at = MIN(media.first_seen_at, excluded.first_seen_at),
+            downloaded_at = CASE
+                WHEN media.downloaded_at IS NULL THEN excluded.downloaded_at
+                WHEN excluded.downloaded_at IS NULL THEN media.downloaded_at
+                ELSE MIN(media.downloaded_at, excluded.downloaded_at)
+            END,
+            width = COALESCE(excluded.width, media.width),
+            height = COALESCE(excluded.height, media.height),
+            fps = COALESCE(excluded.fps, media.fps),
+            video_codec = COALESCE(excluded.video_codec, media.video_codec),
+            audio_codec = COALESCE(excluded.audio_codec, media.audio_codec),
+            format_id = COALESCE(excluded.format_id, media.format_id),
+            output_path = COALESCE(media.output_path, excluded.output_path),
+            status = CASE
+                WHEN media.status = 'downloaded' OR excluded.status = 'downloaded' THEN 'downloaded'
+                WHEN excluded.status = 'failed' THEN 'failed'
+                WHEN media.status = 'failed' THEN 'failed'
+                WHEN excluded.status = 'downloading' OR media.status = 'downloading' THEN 'downloading'
+                ELSE 'discovered'
+            END,
+            last_error = CASE
+                WHEN media.status = 'downloaded' OR excluded.status = 'downloaded' THEN NULL
+                ELSE COALESCE(excluded.last_error, media.last_error)
+            END
+        """
+
+        let statement = try prepare(sql)
+        defer { sqlite3_finalize(statement) }
+        try Self.execute(database: connection.handle, sql: "BEGIN IMMEDIATE TRANSACTION;")
+
+        do {
+            for record in records {
+                sqlite3_reset(statement)
+                sqlite3_clear_bindings(statement)
+
+                let values: [String?] = [
+                    record.site,
+                    record.mediaID,
+                    record.sourceID,
+                    record.collection,
+                    record.sourceURL,
+                    record.creator,
+                    record.title,
+                    record.publishedAt,
+                    record.firstSeenAt,
+                    record.downloadedAt,
+                ]
+                for (offset, value) in values.enumerated() {
+                    bind(value, at: Int32(offset + 1), in: statement)
+                }
+
+                bind(record.width, at: 11, in: statement)
+                bind(record.height, at: 12, in: statement)
+                bind(record.fps, at: 13, in: statement)
+                bind(record.videoCodec, at: 14, in: statement)
+                bind(record.audioCodec, at: 15, in: statement)
+                bind(record.formatID, at: 16, in: statement)
+                bind(record.outputPath, at: 17, in: statement)
+                bind(record.status.rawValue, at: 18, in: statement)
+                bind(record.lastError, at: 19, in: statement)
+
+                guard sqlite3_step(statement) == SQLITE_DONE else {
+                    throw currentError()
+                }
+            }
+
+            try Self.execute(database: connection.handle, sql: "COMMIT;")
+            return records.count
+        } catch {
+            try? Self.execute(database: connection.handle, sql: "ROLLBACK;")
+            throw error
+        }
+    }
+
     public func record(
         media: MediaMetadata,
         collection: String? = nil,

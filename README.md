@@ -29,6 +29,7 @@ Its core idea is simple: download media once, remember it permanently, and keep 
 - `ffmpeg` and `yt-dlp` dependency diagnostics.
 - CLI commands for status, format inspection, URL download, recent history, paths, and output-folder configuration.
 - SwiftUI download screen with URL analysis, available-format preview, output-folder selection, download status, and archive history.
+- Portable `.clipboxbackup` history creation and merge restore from both the CLI and macOS Settings UI.
 
 `yt-dlp` is currently an external runtime dependency. ClipBox detects it in `PATH` and common Homebrew locations. A future packaging phase will decide whether the release app should bundle/manage this dependency or continue to use a user-installed copy.
 
@@ -40,6 +41,7 @@ ClipBox currently uses Swift Package Manager:
 swift build
 swift run clipbox status
 swift run clipbox paths
+swift run clipbox backup create
 swift run ClipBoxApp
 ```
 

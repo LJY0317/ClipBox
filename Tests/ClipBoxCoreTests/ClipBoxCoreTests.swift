@@ -94,6 +94,75 @@ final class ClipBoxCoreTests: XCTestCase {
         XCTAssertEqual(count, 1)
     }
 
+    func testPortableBackupRestoresHistoryIntoAnotherDatabaseByMerge() async throws {
+        let temp = try makeTemporaryDirectory()
+        defer { try? FileManager.default.removeItem(at: temp) }
+
+        let sourceStore = try ArchiveStore(databaseURL: temp.appendingPathComponent("source.sqlite3"))
+        let media = makeMedia()
+        try await sourceStore.record(
+            media: media,
+            status: .downloaded,
+            outputPath: "/Volumes/Old Mac Archive/Fake Video [1965423400123456789].mp4"
+        )
+
+        let backupURL = temp.appendingPathComponent("portable.clipboxbackup")
+        let sourceBackupService = try BackupService(archive: sourceStore)
+        let created = try await sourceBackupService.createBackup(at: backupURL)
+        XCTAssertEqual(created.recordCount, 1)
+        XCTAssertTrue(FileManager.default.fileExists(atPath: created.path))
+
+        let destinationStore = try ArchiveStore(databaseURL: temp.appendingPathComponent("destination.sqlite3"))
+        let destinationBackupService = try BackupService(archive: destinationStore)
+        let restored = try await destinationBackupService.restoreBackup(from: backupURL)
+
+        XCTAssertEqual(restored.backupRecordCount, 1)
+        XCTAssertEqual(restored.recordsProcessed, 1)
+        XCTAssertEqual(restored.recordsAdded, 1)
+        XCTAssertEqual(restored.finalRecordCount, 1)
+        XCTAssertFalse(restored.preferencesRestored)
+
+        let restoredRecord = try await destinationStore.record(identity: media.archiveIdentity)
+        XCTAssertEqual(restoredRecord?.status, .downloaded)
+        XCTAssertEqual(
+            restoredRecord?.outputPath,
+            "/Volumes/Old Mac Archive/Fake Video [1965423400123456789].mp4"
+        )
+    }
+
+    func testArchiveImportDoesNotDowngradeExistingDownloadedRecord() async throws {
+        let temp = try makeTemporaryDirectory()
+        defer { try? FileManager.default.removeItem(at: temp) }
+        let store = try ArchiveStore(databaseURL: temp.appendingPathComponent("history.sqlite3"))
+        let media = makeMedia()
+
+        try await store.record(
+            media: media,
+            status: .downloaded,
+            outputPath: "/Current/Archive/Fake Video.mp4"
+        )
+
+        let failedIncoming = ArchiveRecord(
+            site: media.site,
+            mediaID: media.mediaID,
+            sourceID: media.sourceID,
+            sourceURL: media.webpageURL,
+            creator: media.creator,
+            title: "Older Backup Title",
+            publishedAt: media.uploadDate,
+            firstSeenAt: "2026-01-01T00:00:00Z",
+            downloadedAt: nil,
+            status: .failed,
+            lastError: "old backup failure"
+        )
+
+        _ = try await store.importRecords([failedIncoming])
+        let merged = try await store.record(identity: media.archiveIdentity)
+        XCTAssertEqual(merged?.status, .downloaded)
+        XCTAssertEqual(merged?.outputPath, "/Current/Archive/Fake Video.mp4")
+        XCTAssertNil(merged?.lastError)
+    }
+
     private func makeTemporaryDirectory() throws -> URL {
         let url = FileManager.default.temporaryDirectory
             .appendingPathComponent("ClipBoxTests-\(UUID().uuidString)", isDirectory: true)
