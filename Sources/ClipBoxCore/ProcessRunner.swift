@@ -27,7 +27,8 @@ enum ProcessRunner {
     static func run(
         executable: URL,
         arguments: [String],
-        environment: [String: String]? = nil
+        environment: [String: String]? = nil,
+        standardInput: Data? = nil
     ) throws -> ProcessResult {
         let temporaryDirectory = FileManager.default.temporaryDirectory
             .appendingPathComponent("ClipBox-\(UUID().uuidString)", isDirectory: true)
@@ -36,14 +37,20 @@ enum ProcessRunner {
 
         let stdoutURL = temporaryDirectory.appendingPathComponent("stdout.txt")
         let stderrURL = temporaryDirectory.appendingPathComponent("stderr.txt")
+        let stdinURL = temporaryDirectory.appendingPathComponent("stdin.txt")
         FileManager.default.createFile(atPath: stdoutURL.path, contents: nil)
         FileManager.default.createFile(atPath: stderrURL.path, contents: nil)
+        if let standardInput {
+            try standardInput.write(to: stdinURL, options: .atomic)
+        }
 
         let stdoutHandle = try FileHandle(forWritingTo: stdoutURL)
         let stderrHandle = try FileHandle(forWritingTo: stderrURL)
+        let stdinHandle = standardInput == nil ? nil : try FileHandle(forReadingFrom: stdinURL)
         defer {
             try? stdoutHandle.close()
             try? stderrHandle.close()
+            try? stdinHandle?.close()
         }
 
         let process = Process()
@@ -54,6 +61,9 @@ enum ProcessRunner {
         }
         process.standardOutput = stdoutHandle
         process.standardError = stderrHandle
+        if let stdinHandle {
+            process.standardInput = stdinHandle
+        }
 
         do {
             try process.run()

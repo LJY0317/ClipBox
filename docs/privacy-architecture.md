@@ -24,6 +24,8 @@ For authenticated built-in collections, ClipBox stores the selected browser type
 
 The X Likes collection also needs an account handle to form its timeline URL. The current GUI and CLI treat this as request-time input; it is not written to source-controlled files or ClipBox preferences. Public tests use synthetic handles only.
 
+Private adapter source is also runtime data rather than repository content. `clipbox adapter init` creates adapters below ClipBox's Application Support directory, and the adapter executable is constrained to that adapter's private directory even after resolving symlinks. ClipBox communicates with it through a versioned JSON stdin/stdout protocol; public protocol examples use only reserved `example.invalid` domains.
+
 Protection layers: keep private data outside the checkout; ignore common secret/runtime patterns; scan staged files against the private denylist; scan tracked files and Git history before publication; redact diagnostics before sharing.
 
 If private data ever reaches a public commit, deleting it in a later commit is not sufficient because Git history and already-published copies may retain it.

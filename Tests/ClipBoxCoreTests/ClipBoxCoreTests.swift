@@ -427,6 +427,142 @@ final class ClipBoxCoreTests: XCTestCase {
         XCTAssertEqual(jsonRecord?.status, .downloaded)
     }
 
+    func testPrivateAdapterScaffoldLivesInExternalRuntimeDirectory() async throws {
+        let temp = try makeTemporaryDirectory()
+        defer { try? FileManager.default.removeItem(at: temp) }
+        let adapterRoot = temp.appendingPathComponent("adapters", isDirectory: true)
+        let manager = PrivateAdapterManager(rootDirectory: adapterRoot)
+
+        let directory = try await manager.initialize(id: "ai-test-adapter")
+        XCTAssertEqual(directory.deletingLastPathComponent().standardizedFileURL, adapterRoot.standardizedFileURL)
+        XCTAssertTrue(FileManager.default.fileExists(atPath: directory.appendingPathComponent("adapter.json").path))
+        XCTAssertTrue(FileManager.default.isExecutableFile(atPath: directory.appendingPathComponent("adapter.py").path))
+        XCTAssertTrue(FileManager.default.fileExists(atPath: directory.appendingPathComponent("AGENT_INSTRUCTIONS.md").path))
+
+        let manifest = try await manager.manifest(id: "ai-test-adapter")
+        XCTAssertEqual(manifest.protocolVersion, 1)
+        XCTAssertEqual(manifest.id, "ai-test-adapter")
+        XCTAssertEqual(manifest.collections.first?.id, "favorites")
+
+        let doctor = try await manager.doctor(id: "ai-test-adapter")
+        XCTAssertFalse(doctor.ok)
+        XCTAssertTrue(doctor.message?.contains("not implemented") == true)
+    }
+
+    func testPrivateAdapterSyncUsesAdapterNamespaceAndSkipsSecondRun() async throws {
+        let temp = try makeTemporaryDirectory()
+        defer { try? FileManager.default.removeItem(at: temp) }
+        let adapterRoot = temp.appendingPathComponent("adapters", isDirectory: true)
+        let manager = PrivateAdapterManager(rootDirectory: adapterRoot)
+        let adapterDirectory = try await manager.initialize(id: "synthetic-private")
+
+        let adapterExecutable = adapterDirectory.appendingPathComponent("adapter.py")
+        try privateAdapterTestScript.write(to: adapterExecutable, atomically: true, encoding: .utf8)
+        try FileManager.default.setAttributes(
+            [.posixPermissions: 0o700],
+            ofItemAtPath: adapterExecutable.path
+        )
+
+        let fakeCurl = temp.appendingPathComponent("curl")
+        try fakeCurlScript.write(to: fakeCurl, atomically: true, encoding: .utf8)
+        try FileManager.default.setAttributes(
+            [.posixPermissions: 0o755],
+            ofItemAtPath: fakeCurl.path
+        )
+
+        let store = try ArchiveStore(databaseURL: temp.appendingPathComponent("private.sqlite3"))
+        let service = try PrivateAdapterSyncService(
+            manager: manager,
+            archive: store,
+            directDownloader: DirectMediaDownloader(executableURL: fakeCurl)
+        )
+
+        let preview = try await service.scan(
+            adapterID: "synthetic-private",
+            collection: "favorites",
+            browser: .safari,
+            limit: 100
+        )
+        XCTAssertEqual(preview.items.count, 2)
+        XCTAssertEqual(preview.unarchivedCount, 2)
+
+        let firstSync = try await service.sync(
+            adapterID: "synthetic-private",
+            collection: "favorites",
+            browser: .safari,
+            outputDirectory: temp,
+            limit: 100
+        )
+        XCTAssertEqual(firstSync.downloaded, 2)
+        XCTAssertEqual(firstSync.skippedAlreadyArchived, 0)
+        XCTAssertEqual(firstSync.failed, 0)
+
+        let customRecord = try await store.record(
+            identity: ArchiveIdentity(site: "custom:synthetic-private", mediaID: "private-media-001")
+        )
+        XCTAssertEqual(customRecord?.status, .downloaded)
+        XCTAssertEqual(customRecord?.sourceID, "private-post-001")
+
+        let secondSync = try await service.sync(
+            adapterID: "synthetic-private",
+            collection: "favorites",
+            browser: .safari,
+            outputDirectory: temp,
+            limit: 100
+        )
+        XCTAssertEqual(secondSync.downloaded, 0)
+        XCTAssertEqual(secondSync.skippedAlreadyArchived, 2)
+    }
+
+    func testPrivateAdapterRejectsExecutableSymlinkOutsideAdapterDirectory() async throws {
+        let temp = try makeTemporaryDirectory()
+        defer { try? FileManager.default.removeItem(at: temp) }
+        let adapterRoot = temp.appendingPathComponent("adapters", isDirectory: true)
+        let manager = PrivateAdapterManager(rootDirectory: adapterRoot)
+        let adapterDirectory = try await manager.initialize(id: "symlink-test")
+
+        let outsideExecutable = temp.appendingPathComponent("outside-adapter.sh")
+        try "#!/bin/sh\necho '{}'\n".write(
+            to: outsideExecutable,
+            atomically: true,
+            encoding: .utf8
+        )
+        try FileManager.default.setAttributes(
+            [.posixPermissions: 0o700],
+            ofItemAtPath: outsideExecutable.path
+        )
+
+        let linkedExecutable = adapterDirectory.appendingPathComponent("outside-link")
+        try FileManager.default.createSymbolicLink(
+            at: linkedExecutable,
+            withDestinationURL: outsideExecutable
+        )
+
+        let manifest = PrivateAdapterManifest(
+            id: "symlink-test",
+            displayName: "Symlink Test",
+            executable: "outside-link",
+            collections: [
+                PrivateAdapterCollectionDefinition(id: "favorites", displayName: "Favorites")
+            ]
+        )
+        let encoder = JSONEncoder()
+        encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
+        try encoder.encode(manifest).write(
+            to: adapterDirectory.appendingPathComponent("adapter.json"),
+            options: .atomic
+        )
+
+        do {
+            _ = try await manager.doctor(id: "symlink-test")
+            XCTFail("Expected adapter executable symlink escape to be rejected")
+        } catch let error as PrivateAdapterError {
+            guard case .unsafeExecutablePath = error else {
+                return XCTFail("Unexpected error: \(error)")
+            }
+        }
+    }
+
     private func makeTemporaryDirectory() throws -> URL {
         let url = FileManager.default.temporaryDirectory
             .appendingPathComponent("ClipBoxTests-\(UUID().uuidString)", isDirectory: true)
@@ -540,6 +676,60 @@ final class ClipBoxCoreTests: XCTestCase {
         fi
         printf 'synthetic mp4 data' > "$output"
         exit 0
+        """
+    }
+
+    private var privateAdapterTestScript: String {
+        """
+        #!/usr/bin/env python3
+        import json
+        import sys
+
+        request = json.load(sys.stdin)
+        if request.get("command") == "doctor":
+            json.dump({"protocolVersion": 1, "ok": True, "message": "Ready"}, sys.stdout)
+            raise SystemExit(0)
+
+        if request.get("command") == "scan":
+            json.dump({
+                "protocolVersion": 1,
+                "items": [
+                    {
+                        "mediaID": "private-media-001",
+                        "sourceID": "private-post-001",
+                        "sourceURL": "https://media.example.invalid/watch/private-post-001",
+                        "title": "Synthetic private video one",
+                        "creator": "ExampleCreator",
+                        "publishedAt": "2026-09-08T12:00:00Z",
+                        "extensionName": "mp4",
+                        "width": 1920,
+                        "height": 1080,
+                        "bitrate": 5000000,
+                        "download": {
+                            "strategy": "direct",
+                            "url": "https://cdn.example.invalid/video/private-media-001.mp4"
+                        }
+                    },
+                    {
+                        "mediaID": "private-media-002",
+                        "sourceID": "private-post-002",
+                        "sourceURL": "https://media.example.invalid/watch/private-post-002",
+                        "title": "Synthetic private video two",
+                        "creator": "ExampleCreator",
+                        "publishedAt": "2026-09-08T13:00:00Z",
+                        "extensionName": "mp4",
+                        "width": 1280,
+                        "height": 720,
+                        "download": {
+                            "strategy": "direct",
+                            "url": "https://cdn.example.invalid/video/private-media-002.mp4"
+                        }
+                    }
+                ]
+            }, sys.stdout)
+            raise SystemExit(0)
+
+        raise SystemExit(2)
         """
     }
 }

@@ -69,6 +69,9 @@ struct ClipBoxCommand {
         case "backup":
             try await runBackup(arguments: arguments, json: wantsJSON)
 
+        case "adapter":
+            try await runAdapter(arguments: arguments, json: wantsJSON)
+
         case "config":
             try runConfig(arguments: arguments, json: wantsJSON)
 
@@ -77,6 +80,164 @@ struct ClipBoxCommand {
 
         default:
             throw CLIError.invalidArgument("Unknown command: \(command). Run `clipbox help` for usage.")
+        }
+    }
+
+    private static func runAdapter(arguments: [String], json: Bool) async throws {
+        var arguments = arguments
+        let subcommand = arguments.first ?? "list"
+        if !arguments.isEmpty {
+            arguments.removeFirst()
+        }
+
+        switch subcommand {
+        case "init":
+            guard let id = arguments.first else {
+                throw CLIError.missingArgument("Usage: clipbox adapter init <id>")
+            }
+            let manager = PrivateAdapterManager()
+            let directory = try await manager.initialize(id: id)
+            print("Private adapter scaffold created")
+            print("  id\t\(id)")
+            print("  path\t\(directory.path)")
+            print("  next\tAsk an AI coding agent to customize adapter.py using docs/private-adapter-protocol.md")
+
+        case "list":
+            let manager = PrivateAdapterManager()
+            let manifests = try await manager.list()
+            if json {
+                try printJSON(manifests)
+            } else if manifests.isEmpty {
+                print("No private adapters installed.")
+            } else {
+                for manifest in manifests {
+                    let collections = manifest.collections.map(\.id).joined(separator: ",")
+                    print("\(manifest.id)\t\(manifest.displayName)\t\(collections)")
+                }
+            }
+
+        case "path":
+            guard let id = arguments.first else {
+                throw CLIError.missingArgument("Usage: clipbox adapter path <id>")
+            }
+            let manager = PrivateAdapterManager()
+            print(try await manager.directory(id: id).path)
+
+        case "doctor":
+            guard let id = arguments.first else {
+                throw CLIError.missingArgument("Usage: clipbox adapter doctor <id> [--json]")
+            }
+            let manager = PrivateAdapterManager()
+            let response = try await manager.doctor(id: id)
+            if json {
+                try printJSON(response)
+            } else {
+                print("adapter\t\(id)")
+                print("ok\t\(response.ok ? "yes" : "no")")
+                if let message = response.message {
+                    print("message\t\(message)")
+                }
+            }
+
+        case "scan", "sync":
+            try await runPrivateAdapterCollection(
+                subcommand: subcommand,
+                arguments: arguments,
+                json: json
+            )
+
+        default:
+            throw CLIError.invalidArgument("Unknown adapter command: \(subcommand)")
+        }
+    }
+
+    private static func runPrivateAdapterCollection(
+        subcommand: String,
+        arguments: [String],
+        json: Bool
+    ) async throws {
+        guard arguments.count >= 2 else {
+            throw CLIError.missingArgument(
+                "Usage: clipbox adapter \(subcommand) <id> <collection> [--browser safari] [--limit <n>|--all] [--dry-run] [--output <folder>] [--json]"
+            )
+        }
+        let adapterID = arguments[0]
+        let collection = arguments[1]
+        var remaining = Array(arguments.dropFirst(2))
+        let all = removeFlag("--all", from: &remaining)
+        let dryRun = subcommand == "sync" && removeFlag("--dry-run", from: &remaining)
+        let rawBrowser = try removeOption("--browser", from: &remaining) ?? BrowserCookieSource.safari.rawValue
+        guard let browser = try parseBrowser(rawBrowser) else {
+            throw CLIError.invalidArgument("A browser source is required.")
+        }
+        let rawLimit = try removeOption("--limit", from: &remaining)
+        let output = subcommand == "sync" ? try removeOption("--output", from: &remaining) : nil
+        if all, rawLimit != nil {
+            throw CLIError.invalidArgument("Use either --all or --limit, not both.")
+        }
+        let limit: Int?
+        if all {
+            limit = nil
+        } else if let rawLimit {
+            guard let parsed = Int(rawLimit), parsed > 0 else {
+                throw CLIError.invalidArgument("--limit must be a positive integer")
+            }
+            limit = parsed
+        } else {
+            limit = 100
+        }
+        guard remaining.isEmpty else {
+            throw CLIError.invalidArgument("Unexpected adapter arguments: \(remaining.joined(separator: " "))")
+        }
+
+        let service = try PrivateAdapterSyncService()
+        if subcommand == "scan" {
+            let result = try await service.scan(
+                adapterID: adapterID,
+                collection: collection,
+                browser: browser,
+                limit: limit
+            )
+            if json {
+                try printJSON(result)
+            } else {
+                print("adapter\t\(adapterID)")
+                print("collection\t\(collection)")
+                print("scanned\t\(result.items.count)")
+                print("unarchived\t\(result.unarchivedCount)")
+                for item in result.items {
+                    let state = item.alreadyDownloaded ? "archived" : (item.previouslySeen ? "seen" : "new")
+                    print("\(state)\t\(item.item.mediaID)\t\(item.item.title ?? "(untitled)")")
+                }
+            }
+            return
+        }
+
+        let outputURL = output.map {
+            URL(fileURLWithPath: NSString(string: $0).expandingTildeInPath, isDirectory: true)
+        }
+        let result = try await service.sync(
+            adapterID: adapterID,
+            collection: collection,
+            browser: browser,
+            outputDirectory: outputURL,
+            limit: limit,
+            dryRun: dryRun
+        )
+        if json {
+            try printJSON(result)
+        } else {
+            print("adapter\t\(adapterID)")
+            print("collection\t\(collection)")
+            print("scanned\t\(result.scanned)")
+            print("unarchived\t\(result.unarchived)")
+            print("downloaded\t\(result.downloaded)")
+            print("skipped-archived\t\(result.skippedAlreadyArchived)")
+            print("failed\t\(result.failed)")
+            print("dry-run\t\(result.dryRun ? "yes" : "no")")
+            for failure in result.failures {
+                print("failure\t\(failure.mediaID)\t\(failure.error)")
+            }
         }
     }
 
@@ -441,6 +602,12 @@ struct ClipBoxCommand {
         print("  clipbox history import <file.{jsonl|csv}> [--format <format>] [--json]")
         print("  clipbox backup create [file.clipboxbackup] [--json]")
         print("  clipbox backup restore <file.clipboxbackup> [--restore-preferences] [--json]")
+        print("  clipbox adapter init <id>")
+        print("  clipbox adapter list [--json]")
+        print("  clipbox adapter path <id>")
+        print("  clipbox adapter doctor <id> [--json]")
+        print("  clipbox adapter scan <id> <collection> [--browser safari] [--limit <n>|--all] [--json]")
+        print("  clipbox adapter sync <id> <collection> [--browser safari] [--limit <n>|--all] [--dry-run] [--output <folder>] [--json]")
         print("  clipbox config show [--json]")
         print("  clipbox config output <folder|default>")
         print("  clipbox --version")

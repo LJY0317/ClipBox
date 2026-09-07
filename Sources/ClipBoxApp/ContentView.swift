@@ -5,6 +5,7 @@ import SwiftUI
 private enum SidebarSection: String, CaseIterable, Identifiable {
     case download = "Download"
     case collections = "Collections"
+    case privateAdapters = "Private Adapters"
     case history = "History"
 
     var id: String { rawValue }
@@ -13,6 +14,7 @@ private enum SidebarSection: String, CaseIterable, Identifiable {
         switch self {
         case .download: "arrow.down.circle"
         case .collections: "rectangle.stack"
+        case .privateAdapters: "puzzlepiece.extension"
         case .history: "clock.arrow.circlepath"
         }
     }
@@ -21,6 +23,7 @@ private enum SidebarSection: String, CaseIterable, Identifiable {
 struct ContentView: View {
     @StateObject private var model = DownloadViewModel()
     @StateObject private var collectionModel = CollectionViewModel()
+    @StateObject private var privateAdapterModel = PrivateAdapterViewModel()
     @State private var selection: SidebarSection? = .download
 
     var body: some View {
@@ -36,6 +39,8 @@ struct ContentView: View {
                 downloadView
             case .collections:
                 collectionsView
+            case .privateAdapters:
+                privateAdaptersView
             case .history:
                 historyView
             }
@@ -409,6 +414,192 @@ struct ContentView: View {
         .navigationTitle("Collections")
     }
 
+    private var privateAdaptersView: some View {
+        ScrollView {
+            VStack(alignment: .leading, spacing: 20) {
+                VStack(alignment: .leading, spacing: 8) {
+                    Text("Private Adapters")
+                        .font(.largeTitle)
+                        .fontWeight(.semibold)
+                    Text("Keep site-specific customization outside the public Git repository and let an AI coding agent implement it locally.")
+                        .foregroundStyle(.secondary)
+                }
+
+                Label(
+                    "Private adapters are local executable code and currently run with your user account's permissions. Review or trust the AI-generated code before running Doctor, Preview, or Sync.",
+                    systemImage: "exclamationmark.shield"
+                )
+                .font(.callout)
+                .foregroundStyle(.secondary)
+
+                GroupBox("Create a private adapter") {
+                    VStack(alignment: .leading, spacing: 10) {
+                        HStack {
+                            TextField("adapter-id", text: $privateAdapterModel.newAdapterID)
+                                .textFieldStyle(.roundedBorder)
+                            Button("Create Scaffold") {
+                                privateAdapterModel.createScaffold()
+                            }
+                            .disabled(privateAdapterModel.isWorking)
+                        }
+                        Text("The scaffold is created only under ClipBox's Application Support directory. It is not created inside this Git checkout.")
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                    }
+                    .padding(6)
+                }
+
+                if privateAdapterModel.adapters.isEmpty {
+                    ContentUnavailableView(
+                        "No Private Adapters",
+                        systemImage: "puzzlepiece.extension",
+                        description: Text("Create a scaffold, then ask an AI coding agent to customize its private adapter.py using the public protocol specification.")
+                    )
+                } else {
+                    GroupBox("Adapter") {
+                        Form {
+                            Picker(
+                                "Adapter",
+                                selection: Binding(
+                                    get: { privateAdapterModel.selectedAdapterID },
+                                    set: { privateAdapterModel.selectAdapter($0) }
+                                )
+                            ) {
+                                ForEach(privateAdapterModel.adapters) { adapter in
+                                    Text(adapter.displayName)
+                                        .tag(Optional(adapter.id))
+                                }
+                            }
+
+                            Picker("Collection", selection: $privateAdapterModel.selectedCollectionID) {
+                                ForEach(privateAdapterModel.availableCollections) { collection in
+                                    Text(collection.displayName).tag(collection.id)
+                                }
+                            }
+
+                            Picker("Browser session", selection: $privateAdapterModel.browser) {
+                                ForEach(BrowserCookieSource.allCases, id: \.self) { browser in
+                                    Text(browser.displayName).tag(browser)
+                                }
+                            }
+
+                            Toggle("Scan entire collection", isOn: $privateAdapterModel.scanAll)
+                            if !privateAdapterModel.scanAll {
+                                Stepper(
+                                    "Scan newest \(privateAdapterModel.scanLimit) items",
+                                    value: $privateAdapterModel.scanLimit,
+                                    in: 10...1000,
+                                    step: 10
+                                )
+                            }
+
+                            LabeledContent("Save to") {
+                                HStack(spacing: 10) {
+                                    Text(privateAdapterModel.outputDirectory.path)
+                                        .lineLimit(1)
+                                        .truncationMode(.middle)
+                                        .foregroundStyle(.secondary)
+                                    Button("Choose…") {
+                                        choosePrivateAdapterOutputDirectory()
+                                    }
+                                }
+                            }
+                        }
+                        .padding(6)
+                    }
+
+                    HStack {
+                        Button("Reveal Adapter Folder") {
+                            Task {
+                                if let url = await privateAdapterModel.selectedDirectoryURL() {
+                                    NSWorkspace.shared.activateFileViewerSelecting([url])
+                                }
+                            }
+                        }
+                        Button("Doctor") {
+                            privateAdapterModel.doctor()
+                        }
+                        Button("Preview") {
+                            privateAdapterModel.preview()
+                        }
+                        .disabled(!privateAdapterModel.canRun)
+
+                        Spacer()
+                        if privateAdapterModel.isWorking {
+                            ProgressView()
+                                .controlSize(.small)
+                        }
+                        Button("Sync Unarchived") {
+                            privateAdapterModel.sync()
+                        }
+                        .buttonStyle(.borderedProminent)
+                        .disabled(!privateAdapterModel.canRun)
+                    }
+
+                    Text("ClipBox namespaces the archive key as `custom:<adapter-id> + mediaID`. The public repository never needs to know which real site the private adapter represents.")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+
+                    if let scanResult = privateAdapterModel.scanResult {
+                        GroupBox("Preview") {
+                            VStack(alignment: .leading, spacing: 8) {
+                                Text("Scanned \(scanResult.items.count) · Unarchived \(scanResult.unarchivedCount)")
+                                    .font(.headline)
+                                ForEach(scanResult.items.prefix(50)) { item in
+                                    HStack(spacing: 8) {
+                                        Image(systemName: item.alreadyDownloaded ? "checkmark.circle.fill" : "arrow.down.circle")
+                                            .foregroundStyle(item.alreadyDownloaded ? .secondary : .primary)
+                                        VStack(alignment: .leading, spacing: 2) {
+                                            Text(item.item.title ?? "Untitled")
+                                                .lineLimit(1)
+                                            Text(item.item.mediaID)
+                                                .font(.caption.monospaced())
+                                                .foregroundStyle(.secondary)
+                                                .textSelection(.enabled)
+                                        }
+                                        Spacer()
+                                        Text(item.alreadyDownloaded ? "Archived" : (item.previouslySeen ? "Seen" : "New"))
+                                            .font(.caption)
+                                            .foregroundStyle(.secondary)
+                                    }
+                                }
+                            }
+                            .frame(maxWidth: .infinity, alignment: .leading)
+                            .padding(6)
+                        }
+                    }
+
+                    if let syncResult = privateAdapterModel.syncResult {
+                        GroupBox("Last sync") {
+                            Grid(alignment: .leading, horizontalSpacing: 18, verticalSpacing: 6) {
+                                GridRow { Text("Scanned").foregroundStyle(.secondary); Text("\(syncResult.scanned)") }
+                                GridRow { Text("Unarchived").foregroundStyle(.secondary); Text("\(syncResult.unarchived)") }
+                                GridRow { Text("Downloaded").foregroundStyle(.secondary); Text("\(syncResult.downloaded)") }
+                                GridRow { Text("Skipped").foregroundStyle(.secondary); Text("\(syncResult.skippedAlreadyArchived)") }
+                                GridRow { Text("Failed").foregroundStyle(.secondary); Text("\(syncResult.failed)") }
+                            }
+                            .padding(6)
+                        }
+                    }
+                }
+
+                if !privateAdapterModel.statusMessage.isEmpty {
+                    Text(privateAdapterModel.statusMessage)
+                        .font(.callout)
+                        .foregroundStyle(.secondary)
+                        .textSelection(.enabled)
+                }
+                if let errorMessage = privateAdapterModel.errorMessage {
+                    Label(errorMessage, systemImage: "exclamationmark.triangle.fill")
+                        .foregroundStyle(.red)
+                        .textSelection(.enabled)
+                }
+            }
+            .padding(28)
+        }
+        .navigationTitle("Private Adapters")
+    }
+
     private func chooseOutputDirectory() {
         let panel = NSOpenPanel()
         panel.title = "Choose Download Folder"
@@ -434,6 +625,20 @@ struct ContentView: View {
 
         if panel.runModal() == .OK, let selectedURL = panel.url {
             collectionModel.setOutputDirectory(selectedURL)
+        }
+    }
+
+    private func choosePrivateAdapterOutputDirectory() {
+        let panel = NSOpenPanel()
+        panel.title = "Choose Private Adapter Download Folder"
+        panel.canChooseFiles = false
+        panel.canChooseDirectories = true
+        panel.allowsMultipleSelection = false
+        panel.canCreateDirectories = true
+        panel.directoryURL = privateAdapterModel.outputDirectory
+
+        if panel.runModal() == .OK, let selectedURL = panel.url {
+            privateAdapterModel.setOutputDirectory(selectedURL)
         }
     }
 

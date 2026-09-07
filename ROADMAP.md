@@ -44,13 +44,15 @@
 
 ## Phase 4 - Private/custom adapter system
 
-- [ ] External adapter discovery and loading
+- [x] External private adapter discovery and executable loading
 - [ ] Declarative site profiles for simpler sites
-- [ ] Programmatic adapter SDK for complex sites
-- [ ] `clipbox adapter init`
-- [ ] `clipbox adapter test`
-- [ ] `clipbox adapter doctor`
-- [ ] AI-agent guide and machine-readable adapter schema
+- [x] Programmatic JSON executable protocol for complex sites
+- [x] `clipbox adapter init`, `list`, and `path`
+- [x] `clipbox adapter scan` and `sync`
+- [x] `clipbox adapter doctor`
+- [x] Native Private Adapters GUI for scaffold/doctor/preview/sync
+- [x] AI-agent guide and machine-readable manifest schema
+- [ ] Optional declarative profile generator for adapters that do not need custom code
 
 ## Phase 5 - Native macOS GUI
 
