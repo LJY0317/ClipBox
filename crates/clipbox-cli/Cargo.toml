@@ -1,0 +1,15 @@
+[package]
+name = "clipbox-cli"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[[bin]]
+name = "clipbox"
+path = "src/main.rs"
+
+[dependencies]
+clipbox-core = { path = "../clipbox-core" }
+
+[lints]
+workspace = true
