@@ -20,6 +20,8 @@ ClipBox user data/
 
 `privacy/denylist.txt` is private and may list hostnames or strings that must never occur in staged or published source. The privacy checker reads it from outside the repository.
 
+For authenticated built-in collections, ClipBox stores the selected browser type only as an in-memory execution choice. The extraction tool reads that browser's existing cookies directly when invoked. Cookie values are not copied into the archive database, examples, logs intended for publication, or source-controlled configuration.
+
 Protection layers: keep private data outside the checkout; ignore common secret/runtime patterns; scan staged files against the private denylist; scan tracked files and Git history before publication; redact diagnostics before sharing.
 
 If private data ever reaches a public commit, deleting it in a later commit is not sufficient because Git history and already-published copies may retain it.

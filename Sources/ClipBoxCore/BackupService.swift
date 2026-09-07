@@ -6,14 +6,16 @@ public struct ClipBoxBackupManifest: Codable, Equatable, Sendable {
     public let createdAt: String
     public let archiveSchemaVersion: Int
     public let recordCount: Int
+    public let collectionMembershipCount: Int?
     public let includesPreferences: Bool
 
     public init(
         formatVersion: Int = 1,
         application: String = "ClipBox",
         createdAt: String,
-        archiveSchemaVersion: Int = 1,
+        archiveSchemaVersion: Int = 2,
         recordCount: Int,
+        collectionMembershipCount: Int? = nil,
         includesPreferences: Bool
     ) {
         self.formatVersion = formatVersion
@@ -21,6 +23,7 @@ public struct ClipBoxBackupManifest: Codable, Equatable, Sendable {
         self.createdAt = createdAt
         self.archiveSchemaVersion = archiveSchemaVersion
         self.recordCount = recordCount
+        self.collectionMembershipCount = collectionMembershipCount
         self.includesPreferences = includesPreferences
     }
 }
@@ -108,6 +111,7 @@ public actor BackupService {
 
         let snapshotURL = stagingRoot.appendingPathComponent("history.sqlite3")
         let records = try await archive.createSnapshotAndRecords(at: snapshotURL)
+        let memberships = try await archive.allCollectionMemberships()
 
         let createdAt = ISO8601DateFormatter().string(from: Date())
         let preferences = (try? ClipBoxPreferencesStore.load()) ?? ClipBoxPreferences()
@@ -120,6 +124,7 @@ public actor BackupService {
         let manifest = ClipBoxBackupManifest(
             createdAt: createdAt,
             recordCount: records.count,
+            collectionMembershipCount: memberships.count,
             includesPreferences: true
         )
         try Self.encoder.encode(manifest).write(
@@ -204,8 +209,17 @@ public actor BackupService {
             )
         }
 
+        let memberships = try await backupStore.allCollectionMemberships()
+        if let expectedMembershipCount = manifest.collectionMembershipCount,
+           memberships.count != expectedMembershipCount {
+            throw BackupServiceError.invalidBackup(
+                "manifest reports \(expectedMembershipCount) collection memberships but archive contains \(memberships.count)"
+            )
+        }
+
         let beforeCount = try await archive.count()
         let processed = try await archive.importRecords(records)
+        _ = try await archive.importCollectionMemberships(memberships)
         let afterCount = try await archive.count()
 
         var preferencesRestored = false

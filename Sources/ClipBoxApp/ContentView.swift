@@ -20,6 +20,7 @@ private enum SidebarSection: String, CaseIterable, Identifiable {
 
 struct ContentView: View {
     @StateObject private var model = DownloadViewModel()
+    @StateObject private var collectionModel = CollectionViewModel()
     @State private var selection: SidebarSection? = .download
 
     var body: some View {
@@ -58,6 +59,15 @@ struct ContentView: View {
                     VStack(alignment: .leading, spacing: 12) {
                         TextField("Media URL", text: $model.sourceURL)
                             .textFieldStyle(.roundedBorder)
+
+                        Picker("Browser login", selection: $model.browserCookieSource) {
+                            Text("None (public URL)")
+                                .tag(Optional<BrowserCookieSource>.none)
+                            ForEach(BrowserCookieSource.allCases, id: \.self) { browser in
+                                Text(browser.displayName)
+                                    .tag(Optional(browser))
+                            }
+                        }
 
                         LabeledContent("Save to") {
                             HStack(spacing: 10) {
@@ -254,11 +264,143 @@ struct ContentView: View {
     }
 
     private var collectionsView: some View {
-        ContentUnavailableView(
-            "Collections are next",
-            systemImage: "rectangle.stack",
-            description: Text("Incremental Likes, Bookmarks, Watch Later, and custom adapter collections will build on the archive engine now in place.")
-        )
+        ScrollView {
+            VStack(alignment: .leading, spacing: 20) {
+                VStack(alignment: .leading, spacing: 8) {
+                    Text("Collections")
+                        .font(.largeTitle)
+                        .fontWeight(.semibold)
+                    Text("Preview an authenticated collection and download only media that is not already recorded as downloaded in ClipBox's archive.")
+                        .foregroundStyle(.secondary)
+                }
+
+                GroupBox("Collection") {
+                    Form {
+                        Picker("Source", selection: $collectionModel.selectedCollection) {
+                            ForEach(BuiltInCollection.allCases) { collection in
+                                Text(collection.displayName).tag(collection)
+                            }
+                        }
+
+                        Picker("Browser session", selection: $collectionModel.browser) {
+                            ForEach(BrowserCookieSource.allCases, id: \.self) { browser in
+                                Text(browser.displayName).tag(browser)
+                            }
+                        }
+
+                        Toggle("Scan entire collection", isOn: $collectionModel.scanAll)
+
+                        if !collectionModel.scanAll {
+                            Stepper(
+                                "Scan newest \(collectionModel.scanLimit) items",
+                                value: $collectionModel.scanLimit,
+                                in: 10...1000,
+                                step: 10
+                            )
+                        }
+
+                        LabeledContent("Save to") {
+                            HStack(spacing: 10) {
+                                Text(collectionModel.outputDirectory.path)
+                                    .lineLimit(1)
+                                    .truncationMode(.middle)
+                                    .foregroundStyle(.secondary)
+                                Button("Choose…") {
+                                    chooseCollectionOutputDirectory()
+                                }
+                            }
+                        }
+                    }
+                    .padding(6)
+                }
+
+                Text("ClipBox asks yt-dlp to read the selected browser's existing login cookies at runtime. Cookie values are not copied into the ClipBox repository or archive database.")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+
+                HStack {
+                    Button("Preview") {
+                        collectionModel.preview()
+                    }
+                    .disabled(collectionModel.isWorking)
+
+                    Spacer()
+
+                    if collectionModel.isWorking {
+                        ProgressView()
+                            .controlSize(.small)
+                    }
+
+                    Button("Sync Unarchived") {
+                        collectionModel.sync()
+                    }
+                    .buttonStyle(.borderedProminent)
+                    .disabled(collectionModel.isWorking)
+                }
+
+                if let scanResult = collectionModel.scanResult {
+                    GroupBox("Preview") {
+                        VStack(alignment: .leading, spacing: 8) {
+                            Text("Scanned \(scanResult.items.count) · Unarchived \(scanResult.unarchivedCount)")
+                                .font(.headline)
+
+                            ForEach(scanResult.items.prefix(50)) { item in
+                                HStack(spacing: 8) {
+                                    Image(systemName: item.alreadyDownloaded ? "checkmark.circle.fill" : "arrow.down.circle")
+                                        .foregroundStyle(item.alreadyDownloaded ? .secondary : .primary)
+                                    VStack(alignment: .leading, spacing: 2) {
+                                        Text(item.item.title ?? "Untitled")
+                                            .lineLimit(1)
+                                        Text(item.item.mediaID)
+                                            .font(.caption.monospaced())
+                                            .foregroundStyle(.secondary)
+                                            .textSelection(.enabled)
+                                    }
+                                    Spacer()
+                                    Text(item.alreadyDownloaded ? "Archived" : (item.previouslySeen ? "Seen" : "New"))
+                                        .font(.caption)
+                                        .foregroundStyle(.secondary)
+                                }
+                            }
+
+                            if scanResult.items.count > 50 {
+                                Text("Showing the first 50 preview rows.")
+                                    .font(.caption)
+                                    .foregroundStyle(.secondary)
+                            }
+                        }
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                        .padding(6)
+                    }
+                }
+
+                if let syncResult = collectionModel.syncResult {
+                    GroupBox("Last sync") {
+                        Grid(alignment: .leading, horizontalSpacing: 18, verticalSpacing: 6) {
+                            GridRow { Text("Scanned").foregroundStyle(.secondary); Text("\(syncResult.scanned)") }
+                            GridRow { Text("Unarchived").foregroundStyle(.secondary); Text("\(syncResult.unarchived)") }
+                            GridRow { Text("Downloaded").foregroundStyle(.secondary); Text("\(syncResult.downloaded)") }
+                            GridRow { Text("Skipped").foregroundStyle(.secondary); Text("\(syncResult.skippedAlreadyArchived)") }
+                            GridRow { Text("Failed").foregroundStyle(.secondary); Text("\(syncResult.failed)") }
+                        }
+                        .padding(6)
+                    }
+                }
+
+                if !collectionModel.statusMessage.isEmpty {
+                    Text(collectionModel.statusMessage)
+                        .font(.callout)
+                        .foregroundStyle(.secondary)
+                }
+
+                if let errorMessage = collectionModel.errorMessage {
+                    Label(errorMessage, systemImage: "exclamationmark.triangle.fill")
+                        .foregroundStyle(.red)
+                        .textSelection(.enabled)
+                }
+            }
+            .padding(28)
+        }
         .navigationTitle("Collections")
     }
 
@@ -273,6 +415,20 @@ struct ContentView: View {
 
         if panel.runModal() == .OK, let selectedURL = panel.url {
             model.setOutputDirectory(selectedURL)
+        }
+    }
+
+    private func chooseCollectionOutputDirectory() {
+        let panel = NSOpenPanel()
+        panel.title = "Choose Collection Download Folder"
+        panel.canChooseFiles = false
+        panel.canChooseDirectories = true
+        panel.allowsMultipleSelection = false
+        panel.canCreateDirectories = true
+        panel.directoryURL = collectionModel.outputDirectory
+
+        if panel.runModal() == .OK, let selectedURL = panel.url {
+            collectionModel.setOutputDirectory(selectedURL)
         }
     }
 

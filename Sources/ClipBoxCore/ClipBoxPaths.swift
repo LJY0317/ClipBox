@@ -4,6 +4,10 @@ public enum ClipBoxPaths {
     public static let applicationName = "ClipBox"
 
     public static var defaultDownloadDirectory: URL {
+        if let override = environmentDirectory(named: "CLIPBOX_DOWNLOAD_DIR") {
+            return override
+        }
+
         let downloads = FileManager.default.urls(
             for: .downloadsDirectory,
             in: .userDomainMask
@@ -13,6 +17,10 @@ public enum ClipBoxPaths {
     }
 
     public static var applicationSupportDirectory: URL {
+        if let override = environmentDirectory(named: "CLIPBOX_DATA_DIR") {
+            return override
+        }
+
         let applicationSupport = FileManager.default.urls(
             for: .applicationSupportDirectory,
             in: .userDomainMask
@@ -70,5 +78,18 @@ public enum ClipBoxPaths {
             withIntermediateDirectories: true
         )
         return resolved
+    }
+
+    private static func environmentDirectory(named name: String) -> URL? {
+        guard let rawValue = ProcessInfo.processInfo.environment[name]?
+            .trimmingCharacters(in: .whitespacesAndNewlines),
+              !rawValue.isEmpty else {
+            return nil
+        }
+
+        return URL(
+            fileURLWithPath: NSString(string: rawValue).expandingTildeInPath,
+            isDirectory: true
+        )
     }
 }

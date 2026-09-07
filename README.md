@@ -30,6 +30,7 @@ Its core idea is simple: download media once, remember it permanently, and keep 
 - CLI commands for status, format inspection, URL download, recent history, paths, and output-folder configuration.
 - SwiftUI download screen with URL analysis, available-format preview, output-folder selection, download status, and archive history.
 - Portable `.clipboxbackup` history creation and merge restore from both the CLI and macOS Settings UI.
+- YouTube Liked Videos and Watch Later preview/sync using a user-selected local browser session; already-downloaded media is skipped from the SQLite archive even if its file has moved elsewhere.
 
 `yt-dlp` is currently an external runtime dependency. ClipBox detects it in `PATH` and common Homebrew locations. A future packaging phase will decide whether the release app should bundle/manage this dependency or continue to use a user-installed copy.
 
@@ -42,8 +43,12 @@ swift build
 swift run clipbox status
 swift run clipbox paths
 swift run clipbox backup create
+swift run clipbox scan youtube liked --browser safari --limit 100
+swift run clipbox sync youtube watch-later --browser safari --dry-run
 swift run ClipBoxApp
 ```
+
+Authenticated collection commands pass only the selected browser name to `yt-dlp --cookies-from-browser`. ClipBox does not export browser cookies into its archive database or public repository.
 
 From another working directory, provide the package path explicitly:
 
@@ -51,6 +56,8 @@ From another working directory, provide the package path explicitly:
 swift run --package-path "$HOME/LJY Projects/ClipBox" clipbox status
 swift run --package-path "$HOME/LJY Projects/ClipBox" ClipBoxApp
 ```
+
+For isolated development/automation runs, `CLIPBOX_DATA_DIR` and `CLIPBOX_DOWNLOAD_DIR` can redirect runtime state and downloaded files without changing the normal macOS locations. `CLIPBOX_YTDLP_PATH` and `CLIPBOX_FFMPEG_PATH` can inject explicit executable paths for testing or future application packaging.
 
 The macOS Command Line Tools are enough to build the current core, CLI, and SwiftUI executable. Full Xcode is required on a developer Mac for the local XCTest suite and will also be required later for the conventional signed/notarized `.app` release workflow. GitHub CI runs the test suite on a macOS/Xcode runner.
 

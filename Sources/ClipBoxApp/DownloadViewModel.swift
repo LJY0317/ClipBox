@@ -6,6 +6,7 @@ import Foundation
 final class DownloadViewModel: ObservableObject {
     @Published var sourceURL = ""
     @Published var outputDirectory: URL
+    @Published var browserCookieSource: BrowserCookieSource?
     @Published var media: MediaMetadata?
     @Published var dependencies: ClipBoxDependencyStatus?
     @Published var archiveCount = 0
@@ -20,6 +21,7 @@ final class DownloadViewModel: ObservableObject {
     init() {
         let preferences = (try? ClipBoxPreferencesStore.load()) ?? ClipBoxPreferences()
         outputDirectory = preferences.resolvedOutputDirectory
+        browserCookieSource = nil
 
         do {
             service = try ClipBoxService()
@@ -63,13 +65,17 @@ final class DownloadViewModel: ObservableObject {
         }
 
         let url = sourceURL.trimmingCharacters(in: .whitespacesAndNewlines)
+        let browserCookieSource = browserCookieSource
         isWorking = true
         errorMessage = nil
         statusMessage = "Analyzing media…"
 
         Task {
             do {
-                media = try await service.inspect(url: url)
+                media = try await service.inspect(
+                    url: url,
+                    cookiesFromBrowser: browserCookieSource
+                )
                 statusMessage = "Found \(media?.formats.count ?? 0) available formats."
             } catch {
                 errorMessage = error.localizedDescription
@@ -86,13 +92,18 @@ final class DownloadViewModel: ObservableObject {
         }
 
         let url = sourceURL.trimmingCharacters(in: .whitespacesAndNewlines)
+        let browserCookieSource = browserCookieSource
         isWorking = true
         errorMessage = nil
         statusMessage = "Downloading best available quality…"
 
         Task {
             do {
-                let outcome = try await service.download(url: url, outputDirectory: outputDirectory)
+                let outcome = try await service.download(
+                    url: url,
+                    outputDirectory: outputDirectory,
+                    cookiesFromBrowser: browserCookieSource
+                )
                 switch outcome {
                 case .downloaded(let downloadedMedia, let outputPath):
                     media = downloadedMedia

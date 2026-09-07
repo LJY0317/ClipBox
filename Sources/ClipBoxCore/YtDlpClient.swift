@@ -36,19 +36,25 @@ public actor YtDlpClient {
         return ClipBoxDependencyStatus(ytDlp: ytDlp, ffmpeg: ffmpeg, sqliteVersion: sqliteVersion)
     }
 
-    public func inspect(url: String) throws -> MediaMetadata {
+    public func inspect(
+        url: String,
+        cookiesFromBrowser: BrowserCookieSource? = nil
+    ) throws -> MediaMetadata {
         guard let executableURL else {
             throw YtDlpError.unavailable
         }
 
+        var arguments = [
+            "--dump-single-json",
+            "--no-playlist",
+            "--no-warnings",
+        ]
+        arguments.append(contentsOf: authenticationArguments(cookiesFromBrowser))
+        arguments.append(url)
+
         let result = try ProcessRunner.run(
             executable: executableURL,
-            arguments: [
-                "--dump-single-json",
-                "--no-playlist",
-                "--no-warnings",
-                url,
-            ]
+            arguments: arguments
         )
         guard result.exitCode == 0 else {
             throw YtDlpError.inspectionFailed(cleanError(result.stderr))
@@ -71,7 +77,11 @@ public actor YtDlpClient {
         }
     }
 
-    public func download(url: String, outputDirectory: URL) throws -> String {
+    public func download(
+        url: String,
+        outputDirectory: URL,
+        cookiesFromBrowser: BrowserCookieSource? = nil
+    ) throws -> String {
         guard let executableURL else {
             throw YtDlpError.unavailable
         }
@@ -80,18 +90,21 @@ public actor YtDlpClient {
             .appendingPathComponent("%(title).180B [%(id)s].%(ext)s", isDirectory: false)
             .path
 
+        var arguments = [
+            "--no-playlist",
+            "--newline",
+            "--no-warnings",
+            "--format", "bestvideo*+bestaudio/best",
+            "--merge-output-format", "mp4",
+            "--output", outputTemplate,
+            "--print", "after_move:filepath",
+        ]
+        arguments.append(contentsOf: authenticationArguments(cookiesFromBrowser))
+        arguments.append(url)
+
         let result = try ProcessRunner.run(
             executable: executableURL,
-            arguments: [
-                "--no-playlist",
-                "--newline",
-                "--no-warnings",
-                "--format", "bestvideo*+bestaudio/best",
-                "--merge-output-format", "mp4",
-                "--output", outputTemplate,
-                "--print", "after_move:filepath",
-                url,
-            ]
+            arguments: arguments
         )
         guard result.exitCode == 0 else {
             throw YtDlpError.downloadFailed(cleanError(result.stderr))
@@ -107,6 +120,69 @@ public actor YtDlpClient {
         return finalPath
     }
 
+    public func scanCollection(
+        _ collection: BuiltInCollection,
+        cookiesFromBrowser: BrowserCookieSource,
+        limit: Int? = nil
+    ) throws -> [CollectionItem] {
+        guard let executableURL else {
+            throw YtDlpError.unavailable
+        }
+
+        var arguments = [
+            "--flat-playlist",
+            "--dump-single-json",
+            "--no-warnings",
+            "--cookies-from-browser", cookiesFromBrowser.rawValue,
+        ]
+        if let limit, limit > 0 {
+            arguments.append(contentsOf: ["--playlist-end", String(limit)])
+        }
+        arguments.append(collection.sourceToken)
+
+        let result = try ProcessRunner.run(executable: executableURL, arguments: arguments)
+        guard result.exitCode == 0 else {
+            throw YtDlpError.inspectionFailed(cleanError(result.stderr))
+        }
+
+        guard let data = result.stdout.data(using: .utf8), !data.isEmpty else {
+            throw YtDlpError.malformedMetadata("empty collection JSON output")
+        }
+
+        do {
+            let object = try JSONSerialization.jsonObject(with: data)
+            guard let json = object as? [String: Any],
+                  let entries = json["entries"] as? [[String: Any]] else {
+                throw YtDlpError.malformedMetadata("collection JSON has no entries array")
+            }
+
+            return entries.compactMap { entry in
+                guard let mediaID = Self.string(entry["id"]), !mediaID.isEmpty else {
+                    return nil
+                }
+                let sourceURL = Self.collectionSourceURL(
+                    entry: entry,
+                    collection: collection,
+                    mediaID: mediaID
+                )
+                return CollectionItem(
+                    site: collection.site,
+                    collectionName: collection.collectionName,
+                    mediaID: mediaID,
+                    sourceURL: sourceURL,
+                    title: Self.string(entry["title"]),
+                    creator: Self.string(entry["uploader"])
+                        ?? Self.string(entry["channel"])
+                        ?? Self.string(entry["creator"])
+                )
+            }
+        } catch let error as YtDlpError {
+            throw error
+        } catch {
+            throw YtDlpError.malformedMetadata(error.localizedDescription)
+        }
+    }
+
     private func toolStatus(name: String, executable: URL?, versionArguments: [String]) -> ExternalToolStatus {
         guard let executable else {
             return ExternalToolStatus(name: name, path: nil, version: nil)
@@ -119,6 +195,11 @@ public actor YtDlpClient {
             .first
             .map(String.init)
         return ExternalToolStatus(name: name, path: executable.path, version: firstLine)
+    }
+
+    private func authenticationArguments(_ browser: BrowserCookieSource?) -> [String] {
+        guard let browser else { return [] }
+        return ["--cookies-from-browser", browser.rawValue]
     }
 
     private static func parseMetadata(json: [String: Any], inputURL: String) throws -> MediaMetadata {
@@ -174,6 +255,26 @@ public actor YtDlpClient {
                 return lhsPixels > rhsPixels
             }
         )
+    }
+
+    private static func collectionSourceURL(
+        entry: [String: Any],
+        collection: BuiltInCollection,
+        mediaID: String
+    ) -> String {
+        if let webpageURL = string(entry["webpage_url"]), webpageURL.hasPrefix("http") {
+            return webpageURL
+        }
+        if let url = string(entry["url"]), url.hasPrefix("http") {
+            return url
+        }
+
+        switch collection.site {
+        case "youtube":
+            return "https://www.youtube.com/watch?v=\(mediaID)"
+        default:
+            return string(entry["url"]) ?? mediaID
+        }
     }
 
     private func cleanError(_ stderr: String) -> String {

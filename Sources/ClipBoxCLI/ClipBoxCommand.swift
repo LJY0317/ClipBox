@@ -52,19 +52,16 @@ struct ClipBoxCommand {
             }
 
         case "formats":
-            guard let url = arguments.first else {
-                throw CLIError.missingArgument("Usage: clipbox formats <url> [--json]")
-            }
-            let service = try ClipBoxService()
-            let media = try await service.inspect(url: url)
-            if wantsJSON {
-                try printJSON(media)
-            } else {
-                printFormats(media)
-            }
+            try await runFormats(arguments: arguments, json: wantsJSON)
 
         case "download":
             try await runDownload(arguments: arguments, json: wantsJSON)
+
+        case "scan":
+            try await runCollectionScan(arguments: arguments, json: wantsJSON)
+
+        case "sync":
+            try await runCollectionSync(arguments: arguments, json: wantsJSON)
 
         case "history":
             try await runHistory(arguments: arguments, json: wantsJSON)
@@ -83,17 +80,38 @@ struct ClipBoxCommand {
         }
     }
 
+    private static func runFormats(arguments: [String], json: Bool) async throws {
+        var arguments = arguments
+        let browser = try parseBrowser(try removeOption("--browser", from: &arguments))
+        guard let url = arguments.first else {
+            throw CLIError.missingArgument("Usage: clipbox formats <url> [--browser <browser>] [--json]")
+        }
+        let service = try ClipBoxService()
+        let media = try await service.inspect(url: url, cookiesFromBrowser: browser)
+        if json {
+            try printJSON(media)
+        } else {
+            printFormats(media)
+        }
+    }
+
     private static func runDownload(arguments: [String], json: Bool) async throws {
         var arguments = arguments
         let force = removeFlag("--force", from: &arguments)
         let output = try removeOption("--output", from: &arguments)
+        let browser = try parseBrowser(try removeOption("--browser", from: &arguments))
         guard let url = arguments.first else {
-            throw CLIError.missingArgument("Usage: clipbox download <url> [--output <folder>] [--force] [--json]")
+            throw CLIError.missingArgument("Usage: clipbox download <url> [--output <folder>] [--browser <browser>] [--force] [--json]")
         }
 
         let outputURL = output.map { URL(fileURLWithPath: NSString(string: $0).expandingTildeInPath, isDirectory: true) }
         let service = try ClipBoxService()
-        let outcome = try await service.download(url: url, outputDirectory: outputURL, force: force)
+        let outcome = try await service.download(
+            url: url,
+            outputDirectory: outputURL,
+            force: force,
+            cookiesFromBrowser: browser
+        )
 
         if json {
             try printJSON(outcome)
@@ -113,6 +131,63 @@ struct ClipBoxCommand {
             if let previousPath {
                 print("  previous-file\t\(previousPath)")
             }
+        }
+    }
+
+    private static func runCollectionScan(arguments: [String], json: Bool) async throws {
+        let options = try parseCollectionOptions(arguments: arguments, allowDryRun: false)
+        let service = try CollectionSyncService()
+        let result = try await service.scan(
+            collection: options.collection,
+            cookiesFromBrowser: options.browser,
+            limit: options.limit
+        )
+
+        if json {
+            try printJSON(result)
+            return
+        }
+
+        print(options.collection.displayName)
+        print("scanned\t\(result.items.count)")
+        print("unarchived\t\(result.unarchivedCount)")
+        print("")
+        for item in result.items {
+            let state = item.alreadyDownloaded ? "archived" : (item.previouslySeen ? "seen" : "new")
+            print("\(state)\t\(item.item.mediaID)\t\(item.item.title ?? "(untitled)")")
+        }
+    }
+
+    private static func runCollectionSync(arguments: [String], json: Bool) async throws {
+        let options = try parseCollectionOptions(arguments: arguments, allowDryRun: true)
+        let outputURL = options.output.map {
+            URL(fileURLWithPath: NSString(string: $0).expandingTildeInPath, isDirectory: true)
+        }
+        let service = try CollectionSyncService()
+        let result = try await service.sync(
+            collection: options.collection,
+            cookiesFromBrowser: options.browser,
+            outputDirectory: outputURL,
+            limit: options.limit,
+            dryRun: options.dryRun
+        )
+
+        if json {
+            try printJSON(result)
+            return
+        }
+
+        print("\(options.collection.displayName) \(result.dryRun ? "preview" : "sync")")
+        print("  scanned\t\(result.scanned)")
+        print("  unarchived\t\(result.unarchived)")
+        print("  downloaded\t\(result.downloaded)")
+        print("  skipped-archived\t\(result.skippedAlreadyArchived)")
+        print("  failed\t\(result.failed)")
+        if result.dryRun {
+            print("  note\tDry run: no collection checkpoint or downloads were written.")
+        }
+        for failure in result.failures {
+            print("  failure\t\(failure.mediaID)\t\(failure.error)")
         }
     }
 
@@ -282,8 +357,10 @@ struct ClipBoxCommand {
         print("Usage:")
         print("  clipbox status [--json]")
         print("  clipbox paths [--json]")
-        print("  clipbox formats <url> [--json]")
-        print("  clipbox download <url> [--output <folder>] [--force] [--json]")
+        print("  clipbox formats <url> [--browser <browser>] [--json]")
+        print("  clipbox download <url> [--output <folder>] [--browser <browser>] [--force] [--json]")
+        print("  clipbox scan youtube <liked|watch-later> [--browser safari] [--limit <n>|--all] [--json]")
+        print("  clipbox sync youtube <liked|watch-later> [--browser safari] [--limit <n>|--all] [--dry-run] [--output <folder>] [--json]")
         print("  clipbox history [--limit <n>] [--json]")
         print("  clipbox backup create [file.clipboxbackup] [--json]")
         print("  clipbox backup restore <file.clipboxbackup> [--restore-preferences] [--json]")
@@ -314,6 +391,67 @@ struct ClipBoxCommand {
         return value
     }
 
+    private static func parseBrowser(_ rawValue: String?) throws -> BrowserCookieSource? {
+        guard let rawValue else { return nil }
+        guard let browser = BrowserCookieSource(rawValue: rawValue.lowercased()) else {
+            let supported = BrowserCookieSource.allCases.map(\.rawValue).joined(separator: ", ")
+            throw CLIError.invalidArgument("Unsupported browser `\(rawValue)`. Supported: \(supported)")
+        }
+        return browser
+    }
+
+    private static func parseCollectionOptions(
+        arguments: [String],
+        allowDryRun: Bool
+    ) throws -> CollectionCommandOptions {
+        guard arguments.count >= 2,
+              let collection = BuiltInCollection.resolve(
+                site: arguments[0],
+                collection: arguments[1]
+              ) else {
+            throw CLIError.missingArgument(
+                "Collection must be `youtube liked` or `youtube watch-later`."
+            )
+        }
+
+        var remaining = Array(arguments.dropFirst(2))
+        let all = removeFlag("--all", from: &remaining)
+        let dryRun = allowDryRun && removeFlag("--dry-run", from: &remaining)
+        let rawBrowser = try removeOption("--browser", from: &remaining) ?? BrowserCookieSource.safari.rawValue
+        guard let browser = try parseBrowser(rawBrowser) else {
+            throw CLIError.invalidArgument("A browser cookie source is required for authenticated collections.")
+        }
+        let rawLimit = try removeOption("--limit", from: &remaining)
+        let output = allowDryRun ? try removeOption("--output", from: &remaining) : nil
+
+        if all, rawLimit != nil {
+            throw CLIError.invalidArgument("Use either --all or --limit, not both.")
+        }
+        let limit: Int?
+        if all {
+            limit = nil
+        } else if let rawLimit {
+            guard let parsed = Int(rawLimit), parsed > 0 else {
+                throw CLIError.invalidArgument("--limit must be a positive integer")
+            }
+            limit = parsed
+        } else {
+            limit = 100
+        }
+
+        if !remaining.isEmpty {
+            throw CLIError.invalidArgument("Unexpected arguments: \(remaining.joined(separator: " "))")
+        }
+
+        return CollectionCommandOptions(
+            collection: collection,
+            browser: browser,
+            limit: limit,
+            dryRun: dryRun,
+            output: output
+        )
+    }
+
     private static func printJSON<T: Encodable>(_ value: T) throws {
         let encoder = JSONEncoder()
         encoder.outputFormatting = [.prettyPrinted, .sortedKeys, .withoutEscapingSlashes]
@@ -332,4 +470,12 @@ private struct PathsPayload: Codable {
     let applicationSupport: String
     let archiveDatabase: String
     let adapters: String
+}
+
+private struct CollectionCommandOptions {
+    let collection: BuiltInCollection
+    let browser: BrowserCookieSource
+    let limit: Int?
+    let dryRun: Bool
+    let output: String?
 }

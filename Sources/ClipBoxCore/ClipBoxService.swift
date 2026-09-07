@@ -65,8 +65,11 @@ public actor ClipBoxService {
         await ytDlp.dependencyStatus()
     }
 
-    public func inspect(url: String) async throws -> MediaMetadata {
-        try await ytDlp.inspect(url: url)
+    public func inspect(
+        url: String,
+        cookiesFromBrowser: BrowserCookieSource? = nil
+    ) async throws -> MediaMetadata {
+        try await ytDlp.inspect(url: url, cookiesFromBrowser: cookiesFromBrowser)
     }
 
     public func historyCount() async throws -> Int {
@@ -80,9 +83,13 @@ public actor ClipBoxService {
     public func download(
         url: String,
         outputDirectory: URL? = nil,
-        force: Bool = false
+        force: Bool = false,
+        cookiesFromBrowser: BrowserCookieSource? = nil
     ) async throws -> DownloadOutcome {
-        let media = try await ytDlp.inspect(url: url)
+        let media = try await ytDlp.inspect(
+            url: url,
+            cookiesFromBrowser: cookiesFromBrowser
+        )
 
         if !force, try await archive.downloaded(identity: media.archiveIdentity) {
             let previous = try await archive.record(identity: media.archiveIdentity)?.outputPath
@@ -96,7 +103,11 @@ public actor ClipBoxService {
 
         try await archive.record(media: media, status: .downloading)
         do {
-            let outputPath = try await ytDlp.download(url: url, outputDirectory: destination)
+            let outputPath = try await ytDlp.download(
+                url: url,
+                outputDirectory: destination,
+                cookiesFromBrowser: cookiesFromBrowser
+            )
             try await archive.record(
                 media: media,
                 status: .downloaded,

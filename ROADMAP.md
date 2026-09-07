@@ -24,22 +24,23 @@
 
 - [x] `clipbox download <url>`
 - [x] `clipbox formats <url>`
-- [ ] `clipbox scan <source>`
-- [ ] `clipbox sync <site> <collection>`
+- [x] `clipbox scan <source>` for initial YouTube authenticated collections
+- [x] `clipbox sync <site> <collection>` for initial YouTube authenticated collections
 - [x] `clipbox history ...` (initial recent-history view)
-- [ ] `clipbox backup ...`
+- [x] `clipbox backup ...`
 - [x] `clipbox status`, `paths`, and output-folder configuration
 - [x] `--json` for current machine-readable commands
 - [x] `--output` and `--force` for URL downloads
-- [ ] `--dry-run`, date/range options for collection sync
+- [x] `--dry-run`, `--limit`, and `--all` for current collection sync
+- [ ] Published-date filters and richer collection range policies
 
 ## Phase 3 - Public adapters
 
-- [ ] Generic URL/media adapter
+- [x] Generic/public URL extraction path through yt-dlp
 - [ ] X public URL support
 - [ ] X collection integration where feasible with user-authorized local authentication
-- [ ] YouTube URL support
-- [ ] YouTube collection integration where feasible with user-authorized local authentication
+- [x] YouTube URL support
+- [x] YouTube Liked/Watch Later integration through locally read browser cookies
 
 ## Phase 4 - Private/custom adapter system
 
@@ -56,13 +57,13 @@
 - [x] Shared-core integration
 - [x] Initial native SwiftUI window and output-folder picker
 - [x] Functional URL analysis/download view
-- [ ] Collection synchronization view
+- [x] Initial YouTube collection preview/synchronization view
 - [x] Persisted output location picker
 - [x] Best-quality default and format inventory preview
 - [x] Basic progress, error, and archive-history views
 - [ ] Manual quality selection and collection range controls
 - [ ] Download cancellation and failed-item retry actions
-- [ ] Backup/restore UI
+- [x] Backup/restore UI
 
 ## Phase 6 - Portability and storage
 

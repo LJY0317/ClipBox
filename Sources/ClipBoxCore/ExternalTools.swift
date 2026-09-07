@@ -28,6 +28,25 @@ public struct ClipBoxDependencyStatus: Codable, Equatable, Sendable {
 
 public enum ExecutableLocator {
     public static func locate(_ name: String, environment: [String: String] = ProcessInfo.processInfo.environment) -> URL? {
+        let overrideKey: String?
+        switch name {
+        case "yt-dlp": overrideKey = "CLIPBOX_YTDLP_PATH"
+        case "ffmpeg": overrideKey = "CLIPBOX_FFMPEG_PATH"
+        default: overrideKey = nil
+        }
+
+        if let overrideKey,
+           let overridePath = environment[overrideKey],
+           !overridePath.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+            let candidate = URL(
+                fileURLWithPath: NSString(string: overridePath).expandingTildeInPath,
+                isDirectory: false
+            )
+            if FileManager.default.isExecutableFile(atPath: candidate.path) {
+                return candidate
+            }
+        }
+
         var candidates: [String] = []
         if let path = environment["PATH"] {
             candidates.append(contentsOf: path.split(separator: ":").map(String.init))
