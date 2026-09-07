@@ -70,6 +70,16 @@ public actor ArchiveStore {
         return sqlite3_step(statement) == SQLITE_ROW
     }
 
+    public func downloaded(site: String, sourceID: String) throws -> Bool {
+        let statement = try prepare(
+            "SELECT 1 FROM media WHERE site = ?1 AND source_id = ?2 AND status = 'downloaded' LIMIT 1"
+        )
+        defer { sqlite3_finalize(statement) }
+        bind(site, at: 1, in: statement)
+        bind(sourceID, at: 2, in: statement)
+        return sqlite3_step(statement) == SQLITE_ROW
+    }
+
     public func record(identity: ArchiveIdentity) throws -> ArchiveRecord? {
         let sql = """
         SELECT site, media_id, source_id, collection_name, source_url, creator, title,

@@ -139,6 +139,7 @@ struct ClipBoxCommand {
         let service = try CollectionSyncService()
         let result = try await service.scan(
             collection: options.collection,
+            accountName: options.accountName,
             cookiesFromBrowser: options.browser,
             limit: options.limit
         )
@@ -166,6 +167,7 @@ struct ClipBoxCommand {
         let service = try CollectionSyncService()
         let result = try await service.sync(
             collection: options.collection,
+            accountName: options.accountName,
             cookiesFromBrowser: options.browser,
             outputDirectory: outputURL,
             limit: options.limit,
@@ -329,6 +331,7 @@ struct ClipBoxCommand {
         print("archive-records\t\(historyCount)")
         print("yt-dlp\t\(dependencies.ytDlp.isAvailable ? "available" : "missing")\(dependencies.ytDlp.version.map { " (\($0))" } ?? "")")
         print("ffmpeg\t\(dependencies.ffmpeg.isAvailable ? "available" : "missing")\(dependencies.ffmpeg.version.map { " (\($0))" } ?? "")")
+        print("gallery-dl\t\(dependencies.galleryDl.isAvailable ? "available" : "missing")\(dependencies.galleryDl.version.map { " (\($0))" } ?? "")")
         print("sqlite\t\(dependencies.sqliteVersion)")
         if !dependencies.ytDlp.isAvailable {
             print("")
@@ -361,6 +364,9 @@ struct ClipBoxCommand {
         print("  clipbox download <url> [--output <folder>] [--browser <browser>] [--force] [--json]")
         print("  clipbox scan youtube <liked|watch-later> [--browser safari] [--limit <n>|--all] [--json]")
         print("  clipbox sync youtube <liked|watch-later> [--browser safari] [--limit <n>|--all] [--dry-run] [--output <folder>] [--json]")
+        print("  clipbox scan x bookmarks [--browser safari] [--limit <n>|--all] [--json]")
+        print("  clipbox scan x likes --username <handle> [--browser safari] [--limit <n>|--all] [--json]")
+        print("  clipbox sync x <bookmarks|likes> [--username <handle>] [--browser safari] [--limit <n>|--all] [--dry-run] [--output <folder>] [--json]")
         print("  clipbox history [--limit <n>] [--json]")
         print("  clipbox backup create [file.clipboxbackup] [--json]")
         print("  clipbox backup restore <file.clipboxbackup> [--restore-preferences] [--json]")
@@ -422,7 +428,13 @@ struct ClipBoxCommand {
             throw CLIError.invalidArgument("A browser cookie source is required for authenticated collections.")
         }
         let rawLimit = try removeOption("--limit", from: &remaining)
+        let accountName = try removeOption("--username", from: &remaining)
         let output = allowDryRun ? try removeOption("--output", from: &remaining) : nil
+
+        if collection.requiresAccountName,
+           accountName?.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty != false {
+            throw CLIError.missingArgument("X Likes requires --username <handle>.")
+        }
 
         if all, rawLimit != nil {
             throw CLIError.invalidArgument("Use either --all or --limit, not both.")
@@ -446,6 +458,7 @@ struct ClipBoxCommand {
         return CollectionCommandOptions(
             collection: collection,
             browser: browser,
+            accountName: accountName,
             limit: limit,
             dryRun: dryRun,
             output: output
@@ -475,6 +488,7 @@ private struct PathsPayload: Codable {
 private struct CollectionCommandOptions {
     let collection: BuiltInCollection
     let browser: BrowserCookieSource
+    let accountName: String?
     let limit: Int?
     let dryRun: Bool
     let output: String?

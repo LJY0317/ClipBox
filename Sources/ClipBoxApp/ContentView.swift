@@ -288,6 +288,11 @@ struct ContentView: View {
                             }
                         }
 
+                        if collectionModel.selectedCollection.requiresAccountName {
+                            TextField("X account handle", text: $collectionModel.xAccountName)
+                                .textFieldStyle(.roundedBorder)
+                        }
+
                         Toggle("Scan entire collection", isOn: $collectionModel.scanAll)
 
                         if !collectionModel.scanAll {
@@ -314,7 +319,7 @@ struct ContentView: View {
                     .padding(6)
                 }
 
-                Text("ClipBox asks yt-dlp to read the selected browser's existing login cookies at runtime. Cookie values are not copied into the ClipBox repository or archive database.")
+                Text("ClipBox asks its extraction tools to read the selected browser's existing login cookies at runtime. Cookie values and the X account handle entered here are not copied into the public repository; the handle is kept only in memory for this collection request.")
                     .font(.caption)
                     .foregroundStyle(.secondary)
 

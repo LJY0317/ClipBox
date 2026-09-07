@@ -23,15 +23,24 @@ public enum BrowserCookieSource: String, CaseIterable, Codable, Sendable {
 public enum BuiltInCollection: String, CaseIterable, Codable, Sendable, Identifiable {
     case youtubeLiked = "youtube-liked"
     case youtubeWatchLater = "youtube-watch-later"
+    case xLikes = "x-likes"
+    case xBookmarks = "x-bookmarks"
 
     public var id: String { rawValue }
 
-    public var site: String { "youtube" }
+    public var site: String {
+        switch self {
+        case .youtubeLiked, .youtubeWatchLater: "youtube"
+        case .xLikes, .xBookmarks: "twitter"
+        }
+    }
 
     public var collectionName: String {
         switch self {
         case .youtubeLiked: "liked"
         case .youtubeWatchLater: "watch-later"
+        case .xLikes: "likes"
+        case .xBookmarks: "bookmarks"
         }
     }
 
@@ -39,29 +48,68 @@ public enum BuiltInCollection: String, CaseIterable, Codable, Sendable, Identifi
         switch self {
         case .youtubeLiked: "YouTube Liked Videos"
         case .youtubeWatchLater: "YouTube Watch Later"
+        case .xLikes: "X Likes"
+        case .xBookmarks: "X Bookmarks"
         }
     }
 
-    public var sourceToken: String {
+    public var youtubeSourceToken: String? {
         switch self {
         case .youtubeLiked: ":ytfav"
         case .youtubeWatchLater: ":ytwatchlater"
+        case .xLikes, .xBookmarks: nil
+        }
+    }
+
+    public var requiresAccountName: Bool {
+        self == .xLikes
+    }
+
+    public func collectionURL(accountName: String?) -> String? {
+        switch self {
+        case .xLikes:
+            guard let accountName = Self.normalizedAccountName(accountName), !accountName.isEmpty else {
+                return nil
+            }
+            return "https://x.com/\(accountName)/likes"
+        case .xBookmarks:
+            return "https://x.com/i/bookmarks"
+        case .youtubeLiked, .youtubeWatchLater:
+            return nil
         }
     }
 
     public static func resolve(site: String, collection: String) -> BuiltInCollection? {
         let normalizedSite = site.lowercased()
         let normalizedCollection = collection.lowercased()
-        guard normalizedSite == "youtube" else { return nil }
-
-        switch normalizedCollection {
-        case "liked", "likes", "favorite", "favorites", "favourites":
-            return .youtubeLiked
-        case "watch-later", "watchlater", "later":
-            return .youtubeWatchLater
+        switch normalizedSite {
+        case "youtube", "yt":
+            switch normalizedCollection {
+            case "liked", "likes", "favorite", "favorites", "favourites":
+                return .youtubeLiked
+            case "watch-later", "watchlater", "later":
+                return .youtubeWatchLater
+            default:
+                return nil
+            }
+        case "x", "twitter":
+            switch normalizedCollection {
+            case "liked", "likes":
+                return .xLikes
+            case "bookmark", "bookmarks", "saved":
+                return .xBookmarks
+            default:
+                return nil
+            }
         default:
             return nil
         }
+    }
+
+    private static func normalizedAccountName(_ value: String?) -> String? {
+        value?
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+            .trimmingCharacters(in: CharacterSet(charactersIn: "@"))
     }
 }
 
@@ -71,24 +119,45 @@ public struct CollectionItem: Codable, Equatable, Sendable, Identifiable {
     public let site: String
     public let collectionName: String
     public let mediaID: String
+    public let sourceID: String?
     public let sourceURL: String
     public let title: String?
     public let creator: String?
+    public let publishedAt: String?
+    public let directMediaURL: String?
+    public let extensionName: String?
+    public let width: Int?
+    public let height: Int?
+    public let bitrate: Double?
 
     public init(
         site: String,
         collectionName: String,
         mediaID: String,
+        sourceID: String? = nil,
         sourceURL: String,
         title: String? = nil,
-        creator: String? = nil
+        creator: String? = nil,
+        publishedAt: String? = nil,
+        directMediaURL: String? = nil,
+        extensionName: String? = nil,
+        width: Int? = nil,
+        height: Int? = nil,
+        bitrate: Double? = nil
     ) {
         self.site = site
         self.collectionName = collectionName
         self.mediaID = mediaID
+        self.sourceID = sourceID
         self.sourceURL = sourceURL
         self.title = title
         self.creator = creator
+        self.publishedAt = publishedAt
+        self.directMediaURL = directMediaURL
+        self.extensionName = extensionName
+        self.width = width
+        self.height = height
+        self.bitrate = bitrate
     }
 
     public var archiveIdentity: ArchiveIdentity {

@@ -37,8 +37,8 @@
 ## Phase 3 - Public adapters
 
 - [x] Generic/public URL extraction path through yt-dlp
-- [ ] X public URL support
-- [ ] X collection integration where feasible with user-authorized local authentication
+- [x] X public URL support through yt-dlp
+- [x] Initial X Likes/Bookmarks integration through gallery-dl and locally read browser cookies
 - [x] YouTube URL support
 - [x] YouTube Liked/Watch Later integration through locally read browser cookies
 
@@ -57,7 +57,7 @@
 - [x] Shared-core integration
 - [x] Initial native SwiftUI window and output-folder picker
 - [x] Functional URL analysis/download view
-- [x] Initial YouTube collection preview/synchronization view
+- [x] Initial YouTube and X collection preview/synchronization view
 - [x] Persisted output location picker
 - [x] Best-quality default and format inventory preview
 - [x] Basic progress, error, and archive-history views

@@ -6,6 +6,7 @@ import Foundation
 final class CollectionViewModel: ObservableObject {
     @Published var selectedCollection: BuiltInCollection = .youtubeLiked
     @Published var browser: BrowserCookieSource = .safari
+    @Published var xAccountName = ""
     @Published var scanLimit = 100
     @Published var scanAll = false
     @Published var outputDirectory: URL
@@ -57,11 +58,13 @@ final class CollectionViewModel: ObservableObject {
 
         let collection = selectedCollection
         let browser = browser
+        let accountName = xAccountName
         let limit = effectiveLimit
         Task {
             do {
                 let result = try await service.scan(
                     collection: collection,
+                    accountName: accountName,
                     cookiesFromBrowser: browser,
                     limit: limit
                 )
@@ -86,12 +89,14 @@ final class CollectionViewModel: ObservableObject {
 
         let collection = selectedCollection
         let browser = browser
+        let accountName = xAccountName
         let limit = effectiveLimit
         let outputDirectory = outputDirectory
         Task {
             do {
                 let result = try await service.sync(
                     collection: collection,
+                    accountName: accountName,
                     cookiesFromBrowser: browser,
                     outputDirectory: outputDirectory,
                     limit: limit
@@ -99,6 +104,7 @@ final class CollectionViewModel: ObservableObject {
                 syncResult = result
                 scanResult = try await service.scan(
                     collection: collection,
+                    accountName: accountName,
                     cookiesFromBrowser: browser,
                     limit: limit
                 )

@@ -17,11 +17,18 @@ public struct ExternalToolStatus: Codable, Equatable, Sendable {
 public struct ClipBoxDependencyStatus: Codable, Equatable, Sendable {
     public let ytDlp: ExternalToolStatus
     public let ffmpeg: ExternalToolStatus
+    public let galleryDl: ExternalToolStatus
     public let sqliteVersion: String
 
-    public init(ytDlp: ExternalToolStatus, ffmpeg: ExternalToolStatus, sqliteVersion: String) {
+    public init(
+        ytDlp: ExternalToolStatus,
+        ffmpeg: ExternalToolStatus,
+        galleryDl: ExternalToolStatus,
+        sqliteVersion: String
+    ) {
         self.ytDlp = ytDlp
         self.ffmpeg = ffmpeg
+        self.galleryDl = galleryDl
         self.sqliteVersion = sqliteVersion
     }
 }
@@ -32,6 +39,8 @@ public enum ExecutableLocator {
         switch name {
         case "yt-dlp": overrideKey = "CLIPBOX_YTDLP_PATH"
         case "ffmpeg": overrideKey = "CLIPBOX_FFMPEG_PATH"
+        case "gallery-dl": overrideKey = "CLIPBOX_GALLERYDL_PATH"
+        case "curl": overrideKey = "CLIPBOX_CURL_PATH"
         default: overrideKey = nil
         }
 

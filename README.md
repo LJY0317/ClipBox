@@ -31,8 +31,15 @@ Its core idea is simple: download media once, remember it permanently, and keep 
 - SwiftUI download screen with URL analysis, available-format preview, output-folder selection, download status, and archive history.
 - Portable `.clipboxbackup` history creation and merge restore from both the CLI and macOS Settings UI.
 - YouTube Liked Videos and Watch Later preview/sync using a user-selected local browser session; already-downloaded media is skipped from the SQLite archive even if its file has moved elsewhere.
+- X Likes and Bookmarks preview/sync through `gallery-dl`, with each native video tracked by its media ID so multi-video posts remain separate archive items.
 
-`yt-dlp` is currently an external runtime dependency. ClipBox detects it in `PATH` and common Homebrew locations. A future packaging phase will decide whether the release app should bundle/manage this dependency or continue to use a user-installed copy.
+`yt-dlp`, `gallery-dl`, and `ffmpeg` are currently external runtime dependencies. ClipBox detects them in `PATH` and common Homebrew locations. A future packaging phase will decide whether the release app should bundle/manage these dependencies or continue to use user-installed copies.
+
+For Homebrew-based development:
+
+```sh
+brew install yt-dlp gallery-dl ffmpeg
+```
 
 ## Development
 
@@ -45,10 +52,12 @@ swift run clipbox paths
 swift run clipbox backup create
 swift run clipbox scan youtube liked --browser safari --limit 100
 swift run clipbox sync youtube watch-later --browser safari --dry-run
+swift run clipbox scan x bookmarks --browser safari --limit 100
+swift run clipbox sync x likes --username '<handle>' --browser safari --dry-run
 swift run ClipBoxApp
 ```
 
-Authenticated collection commands pass only the selected browser name to `yt-dlp --cookies-from-browser`. ClipBox does not export browser cookies into its archive database or public repository.
+Authenticated collection commands pass only the selected browser name to the extraction tool's browser-cookie support. ClipBox does not export browser cookies into its archive database or public repository. The X Likes handle is supplied at runtime and is not persisted by the current built-in collection UI/CLI.
 
 From another working directory, provide the package path explicitly:
 
@@ -57,7 +66,7 @@ swift run --package-path "$HOME/LJY Projects/ClipBox" clipbox status
 swift run --package-path "$HOME/LJY Projects/ClipBox" ClipBoxApp
 ```
 
-For isolated development/automation runs, `CLIPBOX_DATA_DIR` and `CLIPBOX_DOWNLOAD_DIR` can redirect runtime state and downloaded files without changing the normal macOS locations. `CLIPBOX_YTDLP_PATH` and `CLIPBOX_FFMPEG_PATH` can inject explicit executable paths for testing or future application packaging.
+For isolated development/automation runs, `CLIPBOX_DATA_DIR` and `CLIPBOX_DOWNLOAD_DIR` can redirect runtime state and downloaded files without changing the normal macOS locations. `CLIPBOX_YTDLP_PATH`, `CLIPBOX_GALLERYDL_PATH`, `CLIPBOX_FFMPEG_PATH`, and `CLIPBOX_CURL_PATH` can inject explicit executable paths for testing or future application packaging.
 
 The macOS Command Line Tools are enough to build the current core, CLI, and SwiftUI executable. Full Xcode is required on a developer Mac for the local XCTest suite and will also be required later for the conventional signed/notarized `.app` release workflow. GitHub CI runs the test suite on a macOS/Xcode runner.
 

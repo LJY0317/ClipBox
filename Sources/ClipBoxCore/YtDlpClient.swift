@@ -32,8 +32,15 @@ public actor YtDlpClient {
         let ytDlp = toolStatus(name: "yt-dlp", executable: executableURL, versionArguments: ["--version"])
         let ffmpegURL = ExecutableLocator.locate("ffmpeg")
         let ffmpeg = toolStatus(name: "ffmpeg", executable: ffmpegURL, versionArguments: ["-version"])
+        let galleryDlURL = ExecutableLocator.locate("gallery-dl")
+        let galleryDl = toolStatus(name: "gallery-dl", executable: galleryDlURL, versionArguments: ["--version"])
         let sqliteVersion = sqlite3_libversion().map { String(cString: $0) } ?? "unknown"
-        return ClipBoxDependencyStatus(ytDlp: ytDlp, ffmpeg: ffmpeg, sqliteVersion: sqliteVersion)
+        return ClipBoxDependencyStatus(
+            ytDlp: ytDlp,
+            ffmpeg: ffmpeg,
+            galleryDl: galleryDl,
+            sqliteVersion: sqliteVersion
+        )
     }
 
     public func inspect(
@@ -129,6 +136,10 @@ public actor YtDlpClient {
             throw YtDlpError.unavailable
         }
 
+        guard let sourceToken = collection.youtubeSourceToken else {
+            throw YtDlpError.inspectionFailed("\(collection.displayName) is not a yt-dlp feed")
+        }
+
         var arguments = [
             "--flat-playlist",
             "--dump-single-json",
@@ -138,7 +149,7 @@ public actor YtDlpClient {
         if let limit, limit > 0 {
             arguments.append(contentsOf: ["--playlist-end", String(limit)])
         }
-        arguments.append(collection.sourceToken)
+        arguments.append(sourceToken)
 
         let result = try ProcessRunner.run(executable: executableURL, arguments: arguments)
         guard result.exitCode == 0 else {
@@ -169,6 +180,7 @@ public actor YtDlpClient {
                     site: collection.site,
                     collectionName: collection.collectionName,
                     mediaID: mediaID,
+                    sourceID: mediaID,
                     sourceURL: sourceURL,
                     title: Self.string(entry["title"]),
                     creator: Self.string(entry["uploader"])

@@ -42,3 +42,16 @@ Built-in collection adapters normalize a service-specific collection into `Colle
 Authentication stays local: the user selects a browser such as Safari or Chrome, and ClipBox passes the browser identifier to the extraction engine's browser-cookie support at runtime. ClipBox does not copy raw cookie values into its SQLite archive or configuration file.
 
 Collection membership has its own SQLite table (`site + collection + media ID`) so ClipBox can distinguish items previously seen in a collection from items merely downloaded through another route. Successful-download state remains authoritative for deciding whether media needs to be downloaded again.
+
+### X collection path
+
+X Likes and Bookmarks use `gallery-dl` for authenticated timeline enumeration and the shared archive for state. The collection parser consumes only MP4/video messages and keeps both identities exposed by X tooling:
+
+- Tweet/post ID is stored as the source ID.
+- Native video media ID is the archive identity whenever it can be derived from the X CDN URL.
+
+This distinction is required for posts containing multiple videos: several videos may share one Tweet ID but have different media IDs. Each video is therefore represented by a separate collection/archive item.
+
+For collection downloads, gallery-dl's selected highest-bitrate direct MP4 variant is transferred without re-encoding. Public live verification showed the selected 1280x720 / 2,176,000 bps MP4 variant corresponded to yt-dlp's 1280x720 / 2176 kbps top progressive format for the same X video. The direct MP4 contained both H.264 video and AAC audio in that sample.
+
+X Likes requires an account handle to construct the account's Likes URL; the current implementation accepts that handle per request rather than persisting it. X Bookmarks uses the authenticated account's bookmarks endpoint and does not need a handle.

@@ -238,6 +238,125 @@ final class ClipBoxCoreTests: XCTestCase {
         XCTAssertEqual(archiveCount, 2)
     }
 
+    func testXCollectionSyncUsesMediaIDsAndPreservesMultipleVideosFromOnePost() async throws {
+        let temp = try makeTemporaryDirectory()
+        defer { try? FileManager.default.removeItem(at: temp) }
+
+        let fakeGalleryDl = temp.appendingPathComponent("gallery-dl")
+        try fakeGalleryDlScript.write(to: fakeGalleryDl, atomically: true, encoding: .utf8)
+        try FileManager.default.setAttributes(
+            [.posixPermissions: 0o755],
+            ofItemAtPath: fakeGalleryDl.path
+        )
+
+        let fakeCurl = temp.appendingPathComponent("curl")
+        try fakeCurlScript.write(to: fakeCurl, atomically: true, encoding: .utf8)
+        try FileManager.default.setAttributes(
+            [.posixPermissions: 0o755],
+            ofItemAtPath: fakeCurl.path
+        )
+
+        let store = try ArchiveStore(databaseURL: temp.appendingPathComponent("x-collections.sqlite3"))
+        let firstVideo = MediaMetadata(
+            site: "twitter",
+            mediaID: "9001",
+            sourceID: "7001",
+            inputURL: "https://x.com/ExampleUser/status/7001",
+            webpageURL: "https://x.com/ExampleUser/status/7001",
+            title: "Two videos in one post",
+            creator: "ExampleUser",
+            uploadDate: "20260908",
+            width: 1280,
+            height: 720,
+            formatID: "gallery-dl-direct-2176000"
+        )
+        try await store.record(
+            media: firstVideo,
+            status: .downloaded,
+            outputPath: "/Volumes/Archive/@ExampleUser 2026-09-08 [7001] [9001] [1280x720].mp4"
+        )
+
+        let galleryClient = GalleryDlClient(executableURL: fakeGalleryDl)
+        let directDownloader = DirectMediaDownloader(executableURL: fakeCurl)
+        let service = try CollectionSyncService(
+            archive: store,
+            galleryDl: galleryClient,
+            directDownloader: directDownloader
+        )
+
+        let preview = try await service.scan(
+            collection: .xBookmarks,
+            cookiesFromBrowser: .safari,
+            limit: 100
+        )
+        XCTAssertEqual(preview.items.count, 3)
+        XCTAssertEqual(preview.unarchivedCount, 2)
+        XCTAssertTrue(preview.items.first { $0.item.mediaID == "9001" }?.alreadyDownloaded == true)
+        XCTAssertTrue(preview.items.first { $0.item.mediaID == "9002" }?.alreadyDownloaded == false)
+        XCTAssertEqual(preview.items.first { $0.item.mediaID == "9002" }?.item.sourceID, "7001")
+
+        let result = try await service.sync(
+            collection: .xBookmarks,
+            cookiesFromBrowser: .safari,
+            outputDirectory: temp,
+            limit: 100
+        )
+        XCTAssertEqual(result.scanned, 3)
+        XCTAssertEqual(result.unarchived, 2)
+        XCTAssertEqual(result.downloaded, 2)
+        XCTAssertEqual(result.skippedAlreadyArchived, 1)
+        XCTAssertEqual(result.failed, 0)
+
+        let secondVideoDownloaded = try await store.downloaded(
+            identity: ArchiveIdentity(site: "twitter", mediaID: "9002")
+        )
+        let thirdVideoDownloaded = try await store.downloaded(
+            identity: ArchiveIdentity(site: "twitter", mediaID: "9003")
+        )
+        XCTAssertTrue(secondVideoDownloaded)
+        XCTAssertTrue(thirdVideoDownloaded)
+
+        let secondRecord = try await store.record(
+            identity: ArchiveIdentity(site: "twitter", mediaID: "9002")
+        )
+        XCTAssertEqual(secondRecord?.sourceID, "7001")
+        XCTAssertTrue(secondRecord?.outputPath?.contains("[7001] [9002] [1280x720].mp4") == true)
+
+        let secondSync = try await service.sync(
+            collection: .xBookmarks,
+            cookiesFromBrowser: .safari,
+            outputDirectory: temp,
+            limit: 100
+        )
+        XCTAssertEqual(secondSync.downloaded, 0)
+        XCTAssertEqual(secondSync.skippedAlreadyArchived, 3)
+    }
+
+    func testGalleryDlXLikesRequiresAccountName() async throws {
+        let temp = try makeTemporaryDirectory()
+        defer { try? FileManager.default.removeItem(at: temp) }
+        let fakeGalleryDl = temp.appendingPathComponent("gallery-dl")
+        try fakeGalleryDlScript.write(to: fakeGalleryDl, atomically: true, encoding: .utf8)
+        try FileManager.default.setAttributes(
+            [.posixPermissions: 0o755],
+            ofItemAtPath: fakeGalleryDl.path
+        )
+
+        let client = GalleryDlClient(executableURL: fakeGalleryDl)
+        do {
+            _ = try await client.scanCollection(
+                .xLikes,
+                cookiesFromBrowser: .safari,
+                limit: 10
+            )
+            XCTFail("Expected X Likes without an account name to fail")
+        } catch let error as GalleryDlError {
+            guard case .missingAccountName = error else {
+                return XCTFail("Unexpected error: \(error)")
+            }
+        }
+    }
+
     private func makeTemporaryDirectory() throws -> URL {
         let url = FileManager.default.temporaryDirectory
             .appendingPathComponent("ClipBoxTests-\(UUID().uuidString)", isDirectory: true)
@@ -307,6 +426,50 @@ final class ClipBoxCoreTests: XCTestCase {
         esac
         echo "unsupported fake yt-dlp invocation" >&2
         exit 2
+        """
+    }
+
+    private var fakeGalleryDlScript: String {
+        """
+        #!/bin/sh
+        case " $* " in
+          *" --version "*)
+            echo "1.32.11-test"
+            exit 0
+            ;;
+          *)
+            cat <<'JSON'
+        [
+          [2,{"tweet_id":7001,"content":"Two videos in one post","date":"2026-09-08 10:00:00","author":{"name":"ExampleUser"},"count":2}],
+          [3,"https://video.twimg.com/ext_tw_video/9001/pu/vid/1280x720/example-one.mp4",{"tweet_id":7001,"content":"Two videos in one post","date":"2026-09-08 10:00:00","author":{"name":"ExampleUser"},"num":1,"type":"video","extension":"mp4","width":1280,"height":720,"bitrate":2176000}],
+          [3,"https://video.twimg.com/ext_tw_video/9002/pu/vid/1280x720/example-two.mp4",{"tweet_id":7001,"content":"Two videos in one post","date":"2026-09-08 10:00:00","author":{"name":"ExampleUser"},"num":2,"type":"video","extension":"mp4","width":1280,"height":720,"bitrate":2176000}],
+          [2,{"tweet_id":7002,"content":"Another video post","date":"2026-09-08 11:00:00","author":{"name":"AnotherUser"},"count":1}],
+          [3,"https://video.twimg.com/amplify_video/9003/vid/avc1/1920x1080/example-three.mp4",{"tweet_id":7002,"content":"Another video post","date":"2026-09-08 11:00:00","author":{"name":"AnotherUser"},"num":1,"type":"video","extension":"mp4","width":1920,"height":1080,"bitrate":5000000}]
+        ]
+        JSON
+            exit 0
+            ;;
+        esac
+        """
+    }
+
+    private var fakeCurlScript: String {
+        """
+        #!/bin/sh
+        output=""
+        while [ "$#" -gt 0 ]; do
+          if [ "$1" = "--output" ]; then
+            shift
+            output="$1"
+          fi
+          shift
+        done
+        if [ -z "$output" ]; then
+          echo "missing --output" >&2
+          exit 2
+        fi
+        printf 'synthetic mp4 data' > "$output"
+        exit 0
         """
     }
 }
