@@ -333,16 +333,14 @@ final class ClipBoxCoreTests: XCTestCase {
         )
         XCTAssertTrue(secondVideoDownloaded)
         XCTAssertTrue(thirdVideoDownloaded)
-        XCTAssertTrue(
-            try await store.downloaded(
-                identity: ArchiveIdentity(site: "twitter", mediaID: "PhotoTokenABC")
-            )
+        let photoDownloaded = try await store.downloaded(
+            identity: ArchiveIdentity(site: "twitter", mediaID: "PhotoTokenABC")
         )
-        XCTAssertTrue(
-            try await store.downloaded(
-                identity: ArchiveIdentity(site: "twitter", mediaID: "AnimTokenXYZ")
-            )
+        let animatedDownloaded = try await store.downloaded(
+            identity: ArchiveIdentity(site: "twitter", mediaID: "AnimTokenXYZ")
         )
+        XCTAssertTrue(photoDownloaded)
+        XCTAssertTrue(animatedDownloaded)
 
         let secondRecord = try await store.record(
             identity: ArchiveIdentity(site: "twitter", mediaID: "9002")
