@@ -29,6 +29,7 @@ public actor CollectionSyncService {
         collection: BuiltInCollection,
         accountName: String? = nil,
         cookiesFromBrowser: BrowserCookieSource,
+        mediaTypes: MediaTypeSelection = .defaultSelection,
         limit: Int? = 100
     ) async throws -> CollectionScanResult {
         let items: [CollectionItem]
@@ -38,12 +39,13 @@ public actor CollectionSyncService {
                 collection,
                 cookiesFromBrowser: cookiesFromBrowser,
                 limit: limit
-            )
+            ).filter { mediaTypes.contains($0.mediaType) }
         case "twitter":
             items = try await galleryDl.scanCollection(
                 collection,
                 accountName: accountName,
                 cookiesFromBrowser: cookiesFromBrowser,
+                mediaTypes: mediaTypes,
                 limit: limit
             )
         default:
@@ -88,6 +90,7 @@ public actor CollectionSyncService {
         accountName: String? = nil,
         cookiesFromBrowser: BrowserCookieSource,
         outputDirectory: URL? = nil,
+        mediaTypes: MediaTypeSelection = .defaultSelection,
         limit: Int? = 100,
         dryRun: Bool = false
     ) async throws -> CollectionSyncResult {
@@ -95,6 +98,7 @@ public actor CollectionSyncService {
             collection: collection,
             accountName: accountName,
             cookiesFromBrowser: cookiesFromBrowser,
+            mediaTypes: mediaTypes,
             limit: limit
         )
         let candidates = scanResult.items.filter { !$0.alreadyDownloaded }

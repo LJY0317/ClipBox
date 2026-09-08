@@ -293,6 +293,15 @@ struct ContentView: View {
                             }
                         }
 
+                        LabeledContent("Media types") {
+                            HStack(spacing: 16) {
+                                ForEach(MediaAssetType.allCases) { type in
+                                    Toggle(type.displayName, isOn: mediaTypeBinding(type))
+                                        .toggleStyle(.checkbox)
+                                }
+                            }
+                        }
+
                         if collectionModel.selectedCollection.requiresAccountName {
                             TextField("X account handle", text: $collectionModel.xAccountName)
                                 .textFieldStyle(.roundedBorder)
@@ -328,11 +337,15 @@ struct ContentView: View {
                     .font(.caption)
                     .foregroundStyle(.secondary)
 
+                Text("Media type filters are applied before archive/download decisions. X supports photos, videos, and animated media here; YouTube's built-in collections currently yield videos. All three media types are enabled by default so a mixed X post is archived completely unless you turn a type off.")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+
                 HStack {
                     Button("Preview") {
                         collectionModel.preview()
                     }
-                    .disabled(collectionModel.isWorking)
+                    .disabled(collectionModel.isWorking || !collectionModel.hasSelectedMediaTypes)
 
                     Spacer()
 
@@ -345,7 +358,13 @@ struct ContentView: View {
                         collectionModel.sync()
                     }
                     .buttonStyle(.borderedProminent)
-                    .disabled(collectionModel.isWorking)
+                    .disabled(collectionModel.isWorking || !collectionModel.hasSelectedMediaTypes)
+                }
+
+                if !collectionModel.hasSelectedMediaTypes {
+                    Label("Select at least one media type before previewing or syncing.", systemImage: "exclamationmark.triangle")
+                        .font(.caption)
+                        .foregroundStyle(.orange)
                 }
 
                 if let scanResult = collectionModel.scanResult {
@@ -358,10 +377,12 @@ struct ContentView: View {
                                 HStack(spacing: 8) {
                                     Image(systemName: item.alreadyDownloaded ? "checkmark.circle.fill" : "arrow.down.circle")
                                         .foregroundStyle(item.alreadyDownloaded ? .secondary : .primary)
+                                    Image(systemName: item.item.mediaType.systemImage)
+                                        .foregroundStyle(.secondary)
                                     VStack(alignment: .leading, spacing: 2) {
                                         Text(item.item.title ?? "Untitled")
                                             .lineLimit(1)
-                                        Text(item.item.mediaID)
+                                        Text("\(item.item.mediaType.displayName) · \(item.item.mediaID)")
                                             .font(.caption.monospaced())
                                             .foregroundStyle(.secondary)
                                             .textSelection(.enabled)
@@ -626,6 +647,13 @@ struct ContentView: View {
         if panel.runModal() == .OK, let selectedURL = panel.url {
             collectionModel.setOutputDirectory(selectedURL)
         }
+    }
+
+    private func mediaTypeBinding(_ type: MediaAssetType) -> Binding<Bool> {
+        Binding(
+            get: { collectionModel.isMediaTypeEnabled(type) },
+            set: { collectionModel.setMediaType(type, enabled: $0) }
+        )
     }
 
     private func choosePrivateAdapterOutputDirectory() {

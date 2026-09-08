@@ -34,6 +34,7 @@ public actor GalleryDlClient {
         _ collection: BuiltInCollection,
         accountName: String? = nil,
         cookiesFromBrowser: BrowserCookieSource,
+        mediaTypes: MediaTypeSelection = .defaultSelection,
         limit: Int? = 100
     ) throws -> [CollectionItem] {
         guard let executableURL else {
@@ -49,7 +50,6 @@ public actor GalleryDlClient {
         var arguments = [
             "--dump-json",
             "--cookies-from-browser", cookiesFromBrowser.rawValue,
-            "--filter", "extension == 'mp4'",
         ]
         if let limit, limit > 0 {
             arguments.append(contentsOf: ["--post-range", "1-\(limit)"])
@@ -69,7 +69,11 @@ public actor GalleryDlClient {
             guard let messages = object as? [Any] else {
                 throw GalleryDlError.malformedOutput("top-level JSON value is not an array")
             }
-            return try parseMessages(messages, collection: collection)
+            return try parseMessages(
+                messages,
+                collection: collection,
+                mediaTypes: mediaTypes
+            )
         } catch let error as GalleryDlError {
             throw error
         } catch {
@@ -79,7 +83,8 @@ public actor GalleryDlClient {
 
     private func parseMessages(
         _ messages: [Any],
-        collection: BuiltInCollection
+        collection: BuiltInCollection,
+        mediaTypes: MediaTypeSelection
     ) throws -> [CollectionItem] {
         var items: [CollectionItem] = []
         var seenMediaIDs = Set<String>()
@@ -101,16 +106,22 @@ public actor GalleryDlClient {
                   message.count >= 3,
                   let directURL = message[1] as? String,
                   let metadata = message[2] as? [String: Any],
-                  (Self.string(metadata["extension"])?.lowercased() == "mp4"
-                    || Self.string(metadata["type"])?.lowercased().contains("video") == true),
                   let tweetID = Self.string(metadata["tweet_id"]),
                   !tweetID.isEmpty else {
                 continue
             }
 
+            guard let mediaType = Self.mediaType(metadata: metadata, directURL: directURL),
+                  mediaTypes.contains(mediaType) else {
+                continue
+            }
+
             let sequenceNumber = Self.int(metadata["num"]) ?? 1
-            let mediaID = Self.mediaID(fromDirectURL: directURL)
-                ?? "\(tweetID)-media-\(sequenceNumber)"
+            let mediaID = Self.mediaID(
+                fromDirectURL: directURL,
+                metadata: metadata,
+                mediaType: mediaType
+            ) ?? "\(tweetID)-\(mediaType.rawValue)-\(sequenceNumber)"
             guard seenMediaIDs.insert(mediaID).inserted else {
                 continue
             }
@@ -134,8 +145,9 @@ public actor GalleryDlClient {
                     title: Self.string(metadata["content"]),
                     creator: creator,
                     publishedAt: Self.string(metadata["date"]),
+                    mediaType: mediaType,
                     directMediaURL: directURL,
-                    extensionName: Self.string(metadata["extension"]) ?? "mp4",
+                    extensionName: Self.extensionName(metadata: metadata, directURL: directURL, mediaType: mediaType),
                     width: Self.int(metadata["width"]),
                     height: Self.int(metadata["height"]),
                     bitrate: Self.double(metadata["bitrate"])
@@ -146,7 +158,15 @@ public actor GalleryDlClient {
         return items
     }
 
-    private static func mediaID(fromDirectURL value: String) -> String? {
+    private static func mediaID(
+        fromDirectURL value: String,
+        metadata: [String: Any],
+        mediaType: MediaAssetType
+    ) -> String? {
+        if let metadataID = string(metadata["media_id"]), !metadataID.isEmpty {
+            return metadataID
+        }
+
         guard let components = URLComponents(string: value) else { return nil }
         let pathComponents = components.path.split(separator: "/").map(String.init)
         for marker in ["ext_tw_video", "amplify_video"] {
@@ -156,6 +176,97 @@ public actor GalleryDlClient {
             let candidate = pathComponents[nextIndex]
             if !candidate.isEmpty, candidate.allSatisfy(\.isNumber) {
                 return candidate
+            }
+        }
+
+        if let marker = pathComponents.firstIndex(of: "media") {
+            let nextIndex = pathComponents.index(after: marker)
+            if nextIndex < pathComponents.endIndex {
+                let token = pathComponents[nextIndex].split(separator: ".", maxSplits: 1).first.map(String.init)
+                if let token, !token.isEmpty {
+                    return token
+                }
+            }
+        }
+
+        if let marker = pathComponents.firstIndex(of: "tweet_video") {
+            let nextIndex = pathComponents.index(after: marker)
+            if nextIndex < pathComponents.endIndex {
+                let token = pathComponents[nextIndex].split(separator: ".", maxSplits: 1).first.map(String.init)
+                if let token, !token.isEmpty {
+                    return token
+                }
+            }
+        }
+
+        if mediaType != .video,
+           let filename = string(metadata["filename"]),
+           !filename.isEmpty {
+            return filename
+        }
+        return nil
+    }
+
+    private static func mediaType(
+        metadata: [String: Any],
+        directURL: String
+    ) -> MediaAssetType? {
+        let rawType = string(metadata["type"])?.lowercased() ?? ""
+        if rawType == "animated_gif" || rawType.contains("animated") {
+            return .animated
+        }
+        if rawType == "photo" || rawType.hasSuffix(":image") || rawType.hasSuffix(":cover") {
+            return .photo
+        }
+        if rawType == "video" || rawType.hasSuffix(":video") {
+            return .video
+        }
+        if rawType == "preview" {
+            return nil
+        }
+
+        guard let ext = detectedExtension(metadata: metadata, directURL: directURL) else {
+            return nil
+        }
+        if ["jpg", "jpeg", "png", "webp", "heic", "avif"].contains(ext.lowercased()) {
+            return .photo
+        }
+        if ["mp4", "mov", "m4v", "webm"].contains(ext.lowercased()) {
+            return .video
+        }
+        return nil
+    }
+
+    private static func extensionName(
+        metadata: [String: Any],
+        directURL: String,
+        mediaType: MediaAssetType
+    ) -> String {
+        if let ext = detectedExtension(metadata: metadata, directURL: directURL) {
+            return ext
+        }
+        return switch mediaType {
+        case .video, .animated: "mp4"
+        case .photo: "jpg"
+        }
+    }
+
+    private static func detectedExtension(
+        metadata: [String: Any],
+        directURL: String
+    ) -> String? {
+        if let ext = string(metadata["extension"]), !ext.isEmpty {
+            return ext.lowercased()
+        }
+        if let components = URLComponents(string: directURL),
+           let format = components.queryItems?.first(where: { $0.name == "format" })?.value,
+           !format.isEmpty {
+            return format.lowercased()
+        }
+        if let components = URLComponents(string: directURL) {
+            let ext = URL(fileURLWithPath: components.path).pathExtension
+            if !ext.isEmpty {
+                return ext.lowercased()
             }
         }
         return nil

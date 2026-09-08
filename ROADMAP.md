@@ -40,6 +40,7 @@
 - [x] Generic/public URL extraction path through yt-dlp
 - [x] X public URL support through yt-dlp
 - [x] Initial X Likes/Bookmarks integration through gallery-dl and locally read browser cookies
+- [x] X photo/video/animated-media filtering with complete mixed-post preservation
 - [x] YouTube URL support
 - [x] YouTube Liked/Watch Later integration through locally read browser cookies
 
@@ -61,6 +62,7 @@
 - [x] Initial native SwiftUI window and output-folder picker
 - [x] Functional URL analysis/download view
 - [x] Initial YouTube and X collection preview/synchronization view
+- [x] Media-type checkboxes for videos, photos, and animated media
 - [x] Persisted output location picker
 - [x] Best-quality default and format inventory preview
 - [x] Basic progress, error, and archive-history views
@@ -78,6 +80,15 @@
 - [x] Safe JSONL/CSV merge import with identifiers treated as text
 - [ ] XLSX merge import after validating edited-workbook string/shared-string handling
 - [ ] External storage awareness
+
+## Phase 6.5 - Optional media extras
+
+- [ ] Audio-only extraction as an explicit derivative download mode
+- [ ] Subtitle/caption sidecars and optional embedding for supported video sources
+- [ ] Thumbnail/cover-art sidecars
+- [ ] Optional cleaned metadata/info JSON sidecars with privacy warnings
+
+These are intentionally separate from the default primary-media archive. Audio-only output is a derivative of a video, while subtitles, thumbnails, and metadata are sidecar assets; enabling them implicitly would multiply files and make archive semantics less predictable.
 
 ## Phase 7 - macOS distribution
 

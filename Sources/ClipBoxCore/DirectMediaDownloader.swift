@@ -86,15 +86,22 @@ public actor DirectMediaDownloader {
             parts.append(String(publishedAt.prefix(10)))
         }
         if let sourceID = item.sourceID, !sourceID.isEmpty {
-            parts.append("[\(sourceID)]")
+            parts.append(sourceID)
         }
-        parts.append("[\(item.mediaID)]")
+        parts.append(item.mediaID)
         if let width = item.width, let height = item.height, width > 0, height > 0 {
-            parts.append("[\(width)x\(height)]")
+            parts.append("\(width)x\(height)")
         }
 
-        let base = FilenameSanitizer.sanitize(parts.joined(separator: " "))
-        let ext = FilenameSanitizer.sanitize(item.extensionName ?? "mp4")
+        let base = FilenameSanitizer.sanitize(parts.joined(separator: "_"))
+        let ext = FilenameSanitizer.sanitize(item.extensionName ?? defaultExtension(for: item.mediaType))
         return "\(base).\(ext)"
+    }
+
+    private func defaultExtension(for mediaType: MediaAssetType) -> String {
+        switch mediaType {
+        case .video, .animated: "mp4"
+        case .photo: "jpg"
+        }
     }
 }

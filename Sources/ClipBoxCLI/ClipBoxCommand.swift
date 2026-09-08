@@ -305,6 +305,7 @@ struct ClipBoxCommand {
             collection: options.collection,
             accountName: options.accountName,
             cookiesFromBrowser: options.browser,
+            mediaTypes: options.mediaTypes,
             limit: options.limit
         )
 
@@ -319,7 +320,7 @@ struct ClipBoxCommand {
         print("")
         for item in result.items {
             let state = item.alreadyDownloaded ? "archived" : (item.previouslySeen ? "seen" : "new")
-            print("\(state)\t\(item.item.mediaID)\t\(item.item.title ?? "(untitled)")")
+            print("\(state)\t\(item.item.mediaType.rawValue)\t\(item.item.mediaID)\t\(item.item.title ?? "(untitled)")")
         }
     }
 
@@ -334,6 +335,7 @@ struct ClipBoxCommand {
             accountName: options.accountName,
             cookiesFromBrowser: options.browser,
             outputDirectory: outputURL,
+            mediaTypes: options.mediaTypes,
             limit: options.limit,
             dryRun: options.dryRun
         )
@@ -596,11 +598,11 @@ struct ClipBoxCommand {
         print("  clipbox paths [--json]")
         print("  clipbox formats <url> [--browser <browser>] [--json]")
         print("  clipbox download <url> [--output <folder>] [--browser <browser>] [--force] [--json]")
-        print("  clipbox scan youtube <liked|watch-later> [--browser safari] [--limit <n>|--all] [--json]")
-        print("  clipbox sync youtube <liked|watch-later> [--browser safari] [--limit <n>|--all] [--dry-run] [--output <folder>] [--json]")
-        print("  clipbox scan x bookmarks [--browser safari] [--limit <n>|--all] [--json]")
-        print("  clipbox scan x likes --username <handle> [--browser safari] [--limit <n>|--all] [--json]")
-        print("  clipbox sync x <bookmarks|likes> [--username <handle>] [--browser safari] [--limit <n>|--all] [--dry-run] [--output <folder>] [--json]")
+        print("  clipbox scan youtube <liked|watch-later> [--media-types videos] [--browser safari] [--limit <n>|--all] [--json]")
+        print("  clipbox sync youtube <liked|watch-later> [--media-types videos] [--browser safari] [--limit <n>|--all] [--dry-run] [--output <folder>] [--json]")
+        print("  clipbox scan x bookmarks [--media-types videos,photos,animated] [--browser safari] [--limit <n>|--all] [--json]")
+        print("  clipbox scan x likes --username <handle> [--media-types videos,photos,animated] [--browser safari] [--limit <n>|--all] [--json]")
+        print("  clipbox sync x <bookmarks|likes> [--username <handle>] [--media-types videos,photos,animated] [--browser safari] [--limit <n>|--all] [--dry-run] [--output <folder>] [--json]")
         print("  clipbox history [--limit <n>] [--json]")
         print("  clipbox history export <file.{jsonl|csv|xlsx}> [--format <format>] [--json]")
         print("  clipbox history import <file.{jsonl|csv}> [--format <format>] [--json]")
@@ -658,7 +660,7 @@ struct ClipBoxCommand {
                 collection: arguments[1]
               ) else {
             throw CLIError.missingArgument(
-                "Collection must be `youtube liked` or `youtube watch-later`."
+                "Collection must be `youtube liked`, `youtube watch-later`, `x bookmarks`, or `x likes`."
             )
         }
 
@@ -671,6 +673,8 @@ struct ClipBoxCommand {
         }
         let rawLimit = try removeOption("--limit", from: &remaining)
         let accountName = try removeOption("--username", from: &remaining)
+        let rawMediaTypes = try removeOption("--media-types", from: &remaining)
+        let mediaTypes = try parseMediaTypes(rawMediaTypes)
         let output = allowDryRun ? try removeOption("--output", from: &remaining) : nil
 
         if collection.requiresAccountName,
@@ -701,10 +705,45 @@ struct ClipBoxCommand {
             collection: collection,
             browser: browser,
             accountName: accountName,
+            mediaTypes: mediaTypes,
             limit: limit,
             dryRun: dryRun,
             output: output
         )
+    }
+
+    private static func parseMediaTypes(_ rawValue: String?) throws -> MediaTypeSelection {
+        guard let rawValue else {
+            return .defaultSelection
+        }
+
+        var types = Set<MediaAssetType>()
+        for rawToken in rawValue.split(separator: ",") {
+            let token = rawToken
+                .trimmingCharacters(in: .whitespacesAndNewlines)
+                .lowercased()
+            switch token {
+            case "all":
+                return .all
+            case "video", "videos":
+                types.insert(.video)
+            case "photo", "photos", "image", "images":
+                types.insert(.photo)
+            case "animated", "animation", "animations", "gif", "gifs", "animated-gif", "animated_gif":
+                types.insert(.animated)
+            case "":
+                continue
+            default:
+                throw CLIError.invalidArgument(
+                    "Unsupported media type `\(rawToken)`. Use videos, photos, animated, or all."
+                )
+            }
+        }
+
+        guard !types.isEmpty else {
+            throw CLIError.invalidArgument("--media-types must select at least one media type.")
+        }
+        return MediaTypeSelection(types: types)
     }
 
     private static func printJSON<T: Encodable>(_ value: T) throws {
@@ -756,6 +795,7 @@ private struct CollectionCommandOptions {
     let collection: BuiltInCollection
     let browser: BrowserCookieSource
     let accountName: String?
+    let mediaTypes: MediaTypeSelection
     let limit: Int?
     let dryRun: Bool
     let output: String?

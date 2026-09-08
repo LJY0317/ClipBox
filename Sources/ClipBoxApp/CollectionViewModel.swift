@@ -7,6 +7,7 @@ final class CollectionViewModel: ObservableObject {
     @Published var selectedCollection: BuiltInCollection = .youtubeLiked
     @Published var browser: BrowserCookieSource = .safari
     @Published var xAccountName = ""
+    @Published var mediaTypes: MediaTypeSelection = .defaultSelection
     @Published var scanLimit = 100
     @Published var scanAll = false
     @Published var outputDirectory: URL
@@ -34,6 +35,20 @@ final class CollectionViewModel: ObservableObject {
         scanAll ? nil : max(1, scanLimit)
     }
 
+    var hasSelectedMediaTypes: Bool {
+        !mediaTypes.isEmpty
+    }
+
+    func isMediaTypeEnabled(_ type: MediaAssetType) -> Bool {
+        mediaTypes.contains(type)
+    }
+
+    func setMediaType(_ type: MediaAssetType, enabled: Bool) {
+        mediaTypes.set(type, enabled: enabled)
+        scanResult = nil
+        syncResult = nil
+    }
+
     func setOutputDirectory(_ url: URL) {
         outputDirectory = url
         var preferences = (try? ClipBoxPreferencesStore.load()) ?? ClipBoxPreferences()
@@ -59,6 +74,7 @@ final class CollectionViewModel: ObservableObject {
         let collection = selectedCollection
         let browser = browser
         let accountName = xAccountName
+        let mediaTypes = mediaTypes
         let limit = effectiveLimit
         Task {
             do {
@@ -66,6 +82,7 @@ final class CollectionViewModel: ObservableObject {
                     collection: collection,
                     accountName: accountName,
                     cookiesFromBrowser: browser,
+                    mediaTypes: mediaTypes,
                     limit: limit
                 )
                 scanResult = result
@@ -90,6 +107,7 @@ final class CollectionViewModel: ObservableObject {
         let collection = selectedCollection
         let browser = browser
         let accountName = xAccountName
+        let mediaTypes = mediaTypes
         let limit = effectiveLimit
         let outputDirectory = outputDirectory
         Task {
@@ -99,6 +117,7 @@ final class CollectionViewModel: ObservableObject {
                     accountName: accountName,
                     cookiesFromBrowser: browser,
                     outputDirectory: outputDirectory,
+                    mediaTypes: mediaTypes,
                     limit: limit
                 )
                 syncResult = result
@@ -106,6 +125,7 @@ final class CollectionViewModel: ObservableObject {
                     collection: collection,
                     accountName: accountName,
                     cookiesFromBrowser: browser,
+                    mediaTypes: mediaTypes,
                     limit: limit
                 )
                 statusMessage = "Downloaded \(result.downloaded), skipped \(result.skippedAlreadyArchived), failed \(result.failed)."

@@ -31,6 +31,13 @@ final class ClipBoxCoreTests: XCTestCase {
         )
     }
 
+    func testMediaTypeSelectionDefaultsToCompleteVisualArchive() {
+        let selection = MediaTypeSelection.defaultSelection
+        XCTAssertTrue(selection.contains(.video))
+        XCTAssertTrue(selection.contains(.photo))
+        XCTAssertTrue(selection.contains(.animated))
+    }
+
     func testArchiveStoreRecordsAndFindsDownloadedMediaWithoutCheckingFilePresence() async throws {
         let temp = try makeTemporaryDirectory()
         defer { try? FileManager.default.removeItem(at: temp) }
@@ -238,7 +245,7 @@ final class ClipBoxCoreTests: XCTestCase {
         XCTAssertEqual(archiveCount, 2)
     }
 
-    func testXCollectionSyncUsesMediaIDsAndPreservesMultipleVideosFromOnePost() async throws {
+    func testXCollectionSyncPreservesMixedMediaAndMediaTypeFilters() async throws {
         let temp = try makeTemporaryDirectory()
         defer { try? FileManager.default.removeItem(at: temp) }
 
@@ -273,7 +280,7 @@ final class ClipBoxCoreTests: XCTestCase {
         try await store.record(
             media: firstVideo,
             status: .downloaded,
-            outputPath: "/Volumes/Archive/@ExampleUser 2026-09-08 [7001] [9001] [1280x720].mp4"
+            outputPath: "/Volumes/Archive/@ExampleUser_2026-09-08_7001_9001_1280x720.mp4"
         )
 
         let galleryClient = GalleryDlClient(executableURL: fakeGalleryDl)
@@ -289,11 +296,22 @@ final class ClipBoxCoreTests: XCTestCase {
             cookiesFromBrowser: .safari,
             limit: 100
         )
-        XCTAssertEqual(preview.items.count, 3)
-        XCTAssertEqual(preview.unarchivedCount, 2)
+        XCTAssertEqual(preview.items.count, 5)
+        XCTAssertEqual(preview.unarchivedCount, 4)
         XCTAssertTrue(preview.items.first { $0.item.mediaID == "9001" }?.alreadyDownloaded == true)
         XCTAssertTrue(preview.items.first { $0.item.mediaID == "9002" }?.alreadyDownloaded == false)
         XCTAssertEqual(preview.items.first { $0.item.mediaID == "9002" }?.item.sourceID, "7001")
+        XCTAssertEqual(preview.items.first { $0.item.mediaID == "PhotoTokenABC" }?.item.mediaType, .photo)
+        XCTAssertEqual(preview.items.first { $0.item.mediaID == "AnimTokenXYZ" }?.item.mediaType, .animated)
+
+        let photoAndVideoOnly = try await service.scan(
+            collection: .xBookmarks,
+            cookiesFromBrowser: .safari,
+            mediaTypes: MediaTypeSelection(types: [.photo, .video]),
+            limit: 100
+        )
+        XCTAssertEqual(photoAndVideoOnly.items.count, 4)
+        XCTAssertFalse(photoAndVideoOnly.items.contains { $0.item.mediaType == .animated })
 
         let result = try await service.sync(
             collection: .xBookmarks,
@@ -301,9 +319,9 @@ final class ClipBoxCoreTests: XCTestCase {
             outputDirectory: temp,
             limit: 100
         )
-        XCTAssertEqual(result.scanned, 3)
-        XCTAssertEqual(result.unarchived, 2)
-        XCTAssertEqual(result.downloaded, 2)
+        XCTAssertEqual(result.scanned, 5)
+        XCTAssertEqual(result.unarchived, 4)
+        XCTAssertEqual(result.downloaded, 4)
         XCTAssertEqual(result.skippedAlreadyArchived, 1)
         XCTAssertEqual(result.failed, 0)
 
@@ -315,12 +333,32 @@ final class ClipBoxCoreTests: XCTestCase {
         )
         XCTAssertTrue(secondVideoDownloaded)
         XCTAssertTrue(thirdVideoDownloaded)
+        XCTAssertTrue(
+            try await store.downloaded(
+                identity: ArchiveIdentity(site: "twitter", mediaID: "PhotoTokenABC")
+            )
+        )
+        XCTAssertTrue(
+            try await store.downloaded(
+                identity: ArchiveIdentity(site: "twitter", mediaID: "AnimTokenXYZ")
+            )
+        )
 
         let secondRecord = try await store.record(
             identity: ArchiveIdentity(site: "twitter", mediaID: "9002")
         )
         XCTAssertEqual(secondRecord?.sourceID, "7001")
-        XCTAssertTrue(secondRecord?.outputPath?.contains("[7001] [9002] [1280x720].mp4") == true)
+        XCTAssertTrue(secondRecord?.outputPath?.contains("@ExampleUser_2026-09-08_7001_9002_1280x720.mp4") == true)
+
+        let photoRecord = try await store.record(
+            identity: ArchiveIdentity(site: "twitter", mediaID: "PhotoTokenABC")
+        )
+        XCTAssertTrue(photoRecord?.outputPath?.contains("@ExampleUser_2026-09-08_7001_PhotoTokenABC_2048x1365.jpg") == true)
+
+        let animatedRecord = try await store.record(
+            identity: ArchiveIdentity(site: "twitter", mediaID: "AnimTokenXYZ")
+        )
+        XCTAssertTrue(animatedRecord?.outputPath?.contains("@ExampleUser_2026-09-08_7001_AnimTokenXYZ_640x360.mp4") == true)
 
         let secondSync = try await service.sync(
             collection: .xBookmarks,
@@ -329,7 +367,7 @@ final class ClipBoxCoreTests: XCTestCase {
             limit: 100
         )
         XCTAssertEqual(secondSync.downloaded, 0)
-        XCTAssertEqual(secondSync.skippedAlreadyArchived, 3)
+        XCTAssertEqual(secondSync.skippedAlreadyArchived, 5)
     }
 
     func testGalleryDlXLikesRequiresAccountName() async throws {
@@ -646,9 +684,11 @@ final class ClipBoxCoreTests: XCTestCase {
           *)
             cat <<'JSON'
         [
-          [2,{"tweet_id":7001,"content":"Two videos in one post","date":"2026-09-08 10:00:00","author":{"name":"ExampleUser"},"count":2}],
-          [3,"https://video.twimg.com/ext_tw_video/9001/pu/vid/1280x720/example-one.mp4",{"tweet_id":7001,"content":"Two videos in one post","date":"2026-09-08 10:00:00","author":{"name":"ExampleUser"},"num":1,"type":"video","extension":"mp4","width":1280,"height":720,"bitrate":2176000}],
-          [3,"https://video.twimg.com/ext_tw_video/9002/pu/vid/1280x720/example-two.mp4",{"tweet_id":7001,"content":"Two videos in one post","date":"2026-09-08 10:00:00","author":{"name":"ExampleUser"},"num":2,"type":"video","extension":"mp4","width":1280,"height":720,"bitrate":2176000}],
+          [2,{"tweet_id":7001,"content":"Mixed media in one post","date":"2026-09-08 10:00:00","author":{"name":"ExampleUser"},"count":4}],
+          [3,"https://video.twimg.com/ext_tw_video/9001/pu/vid/1280x720/example-one.mp4",{"tweet_id":7001,"content":"Mixed media in one post","date":"2026-09-08 10:00:00","author":{"name":"ExampleUser"},"num":1,"type":"video","extension":"mp4","width":1280,"height":720,"bitrate":2176000}],
+          [3,"https://video.twimg.com/ext_tw_video/9002/pu/vid/1280x720/example-two.mp4",{"tweet_id":7001,"content":"Mixed media in one post","date":"2026-09-08 10:00:00","author":{"name":"ExampleUser"},"num":2,"type":"video","extension":"mp4","width":1280,"height":720,"bitrate":2176000}],
+          [3,"https://pbs.twimg.com/media/PhotoTokenABC?format=jpg&name=orig",{"tweet_id":7001,"content":"Mixed media in one post","date":"2026-09-08 10:00:00","author":{"name":"ExampleUser"},"num":3,"type":"photo","filename":"PhotoTokenABC","extension":"jpg","width":2048,"height":1365}],
+          [3,"https://video.twimg.com/tweet_video/AnimTokenXYZ.mp4",{"tweet_id":7001,"content":"Mixed media in one post","date":"2026-09-08 10:00:00","author":{"name":"ExampleUser"},"num":4,"type":"animated_gif","filename":"AnimTokenXYZ","extension":"mp4","width":640,"height":360}],
           [2,{"tweet_id":7002,"content":"Another video post","date":"2026-09-08 11:00:00","author":{"name":"AnotherUser"},"count":1}],
           [3,"https://video.twimg.com/amplify_video/9003/vid/avc1/1920x1080/example-three.mp4",{"tweet_id":7002,"content":"Another video post","date":"2026-09-08 11:00:00","author":{"name":"AnotherUser"},"num":1,"type":"video","extension":"mp4","width":1920,"height":1080,"bitrate":5000000}]
         ]

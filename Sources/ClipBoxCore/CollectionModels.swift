@@ -20,6 +20,59 @@ public enum BrowserCookieSource: String, CaseIterable, Codable, Sendable {
     }
 }
 
+public enum MediaAssetType: String, CaseIterable, Codable, Sendable, Identifiable, Hashable {
+    case video
+    case photo
+    case animated
+
+    public var id: String { rawValue }
+
+    public var displayName: String {
+        switch self {
+        case .video: "Videos"
+        case .photo: "Photos"
+        case .animated: "Animated media"
+        }
+    }
+
+    public var systemImage: String {
+        switch self {
+        case .video: "video.fill"
+        case .photo: "photo"
+        case .animated: "sparkles.rectangle.stack"
+        }
+    }
+}
+
+public struct MediaTypeSelection: Codable, Equatable, Sendable {
+    public var types: Set<MediaAssetType>
+
+    public static let all = MediaTypeSelection(types: Set(MediaAssetType.allCases))
+    public static let defaultSelection = all
+
+    public init(types: Set<MediaAssetType> = Set(MediaAssetType.allCases)) {
+        self.types = types
+    }
+
+    public func contains(_ type: MediaAssetType) -> Bool {
+        types.contains(type)
+    }
+
+    public mutating func set(_ type: MediaAssetType, enabled: Bool) {
+        if enabled {
+            types.insert(type)
+        } else {
+            types.remove(type)
+        }
+    }
+
+    public var isEmpty: Bool { types.isEmpty }
+
+    public var sortedTypes: [MediaAssetType] {
+        MediaAssetType.allCases.filter(types.contains)
+    }
+}
+
 public enum BuiltInCollection: String, CaseIterable, Codable, Sendable, Identifiable {
     case youtubeLiked = "youtube-liked"
     case youtubeWatchLater = "youtube-watch-later"
@@ -124,6 +177,7 @@ public struct CollectionItem: Codable, Equatable, Sendable, Identifiable {
     public let title: String?
     public let creator: String?
     public let publishedAt: String?
+    public let mediaType: MediaAssetType
     public let directMediaURL: String?
     public let extensionName: String?
     public let width: Int?
@@ -139,6 +193,7 @@ public struct CollectionItem: Codable, Equatable, Sendable, Identifiable {
         title: String? = nil,
         creator: String? = nil,
         publishedAt: String? = nil,
+        mediaType: MediaAssetType = .video,
         directMediaURL: String? = nil,
         extensionName: String? = nil,
         width: Int? = nil,
@@ -153,6 +208,7 @@ public struct CollectionItem: Codable, Equatable, Sendable, Identifiable {
         self.title = title
         self.creator = creator
         self.publishedAt = publishedAt
+        self.mediaType = mediaType
         self.directMediaURL = directMediaURL
         self.extensionName = extensionName
         self.width = width
