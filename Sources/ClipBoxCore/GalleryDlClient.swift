@@ -128,6 +128,7 @@ public actor GalleryDlClient {
 
             let author = metadata["author"] as? [String: Any]
             let creator = Self.string(author?["name"])
+            let creatorID = Self.string(author?["id"])
             let postURL: String
             if let creator, !creator.isEmpty {
                 postURL = "https://x.com/\(creator)/status/\(tweetID)"
@@ -144,6 +145,7 @@ public actor GalleryDlClient {
                     sourceURL: postURL,
                     title: Self.string(metadata["content"]),
                     creator: creator,
+                    creatorID: creatorID,
                     publishedAt: Self.string(metadata["date"]),
                     mediaType: mediaType,
                     directMediaURL: directURL,

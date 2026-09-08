@@ -176,6 +176,7 @@ public struct CollectionItem: Codable, Equatable, Sendable, Identifiable {
     public let sourceURL: String
     public let title: String?
     public let creator: String?
+    public let creatorID: String?
     public let publishedAt: String?
     public let mediaType: MediaAssetType
     public let directMediaURL: String?
@@ -192,6 +193,7 @@ public struct CollectionItem: Codable, Equatable, Sendable, Identifiable {
         sourceURL: String,
         title: String? = nil,
         creator: String? = nil,
+        creatorID: String? = nil,
         publishedAt: String? = nil,
         mediaType: MediaAssetType = .video,
         directMediaURL: String? = nil,
@@ -207,6 +209,7 @@ public struct CollectionItem: Codable, Equatable, Sendable, Identifiable {
         self.sourceURL = sourceURL
         self.title = title
         self.creator = creator
+        self.creatorID = creatorID
         self.publishedAt = publishedAt
         self.mediaType = mediaType
         self.directMediaURL = directMediaURL

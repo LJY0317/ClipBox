@@ -78,6 +78,10 @@ public actor DirectMediaDownloader {
     }
 
     private func filename(for item: CollectionItem) -> String {
+        if item.site == "twitter" {
+            return xFilename(for: item)
+        }
+
         var parts: [String] = []
         if let creator = item.creator, !creator.isEmpty {
             parts.append(creator.hasPrefix("@") ? creator : "@\(creator)")
@@ -96,6 +100,40 @@ public actor DirectMediaDownloader {
         let base = FilenameSanitizer.sanitize(parts.joined(separator: "_"))
         let ext = FilenameSanitizer.sanitize(item.extensionName ?? defaultExtension(for: item.mediaType))
         return "\(base).\(ext)"
+    }
+
+    private func xFilename(for item: CollectionItem) -> String {
+        var parts = ["x"]
+
+        if let creatorID = item.creatorID, !creatorID.isEmpty {
+            parts.append(FilenameSanitizer.sanitize(creatorID))
+        } else {
+            parts.append("unknown-user")
+        }
+
+        if let publishedAt = item.publishedAt, publishedAt.count >= 10 {
+            parts.append(String(publishedAt.prefix(10)))
+        } else {
+            parts.append("unknown-date")
+        }
+
+        if let creator = item.creator, !creator.isEmpty {
+            let handle = creator.hasPrefix("@") ? creator : "@\(creator)"
+            parts.append(FilenameSanitizer.sanitize(handle))
+        } else {
+            parts.append("@unknown")
+        }
+
+        parts.append(FilenameSanitizer.sanitize(item.mediaID))
+
+        if let width = item.width, let height = item.height, width > 0, height > 0 {
+            parts.append("\(width)x\(height)")
+        } else {
+            parts.append("unknown-resolution")
+        }
+
+        let ext = FilenameSanitizer.sanitize(item.extensionName ?? defaultExtension(for: item.mediaType))
+        return "\(parts.joined(separator: "_")).\(ext)"
     }
 
     private func defaultExtension(for mediaType: MediaAssetType) -> String {

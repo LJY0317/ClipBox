@@ -21,6 +21,10 @@ final class ClipBoxCoreTests: XCTestCase {
             FilenameSanitizer.sanitize("A/B:C?D*E"),
             "A_B_C_D_E"
         )
+        XCTAssertEqual(
+            FilenameSanitizer.sanitize("@ExampleUser"),
+            "@ExampleUser"
+        )
     }
 
     func testPreferencesDefaultToDownloadsClipBox() {
@@ -346,17 +350,17 @@ final class ClipBoxCoreTests: XCTestCase {
             identity: ArchiveIdentity(site: "twitter", mediaID: "9002")
         )
         XCTAssertEqual(secondRecord?.sourceID, "7001")
-        XCTAssertTrue(secondRecord?.outputPath?.contains("@ExampleUser_2026-09-08_7001_9002_1280x720.mp4") == true)
+        XCTAssertTrue(secondRecord?.outputPath?.contains("x_424242_2026-09-08_@ExampleUser_9002_1280x720.mp4") == true)
 
         let photoRecord = try await store.record(
             identity: ArchiveIdentity(site: "twitter", mediaID: "PhotoTokenABC")
         )
-        XCTAssertTrue(photoRecord?.outputPath?.contains("@ExampleUser_2026-09-08_7001_PhotoTokenABC_2048x1365.jpg") == true)
+        XCTAssertTrue(photoRecord?.outputPath?.contains("x_424242_2026-09-08_@ExampleUser_PhotoTokenABC_2048x1365.jpg") == true)
 
         let animatedRecord = try await store.record(
             identity: ArchiveIdentity(site: "twitter", mediaID: "AnimTokenXYZ")
         )
-        XCTAssertTrue(animatedRecord?.outputPath?.contains("@ExampleUser_2026-09-08_7001_AnimTokenXYZ_640x360.mp4") == true)
+        XCTAssertTrue(animatedRecord?.outputPath?.contains("x_424242_2026-09-08_@ExampleUser_AnimTokenXYZ_640x360.mp4") == true)
 
         let secondSync = try await service.sync(
             collection: .xBookmarks,
@@ -682,13 +686,13 @@ final class ClipBoxCoreTests: XCTestCase {
           *)
             cat <<'JSON'
         [
-          [2,{"tweet_id":7001,"content":"Mixed media in one post","date":"2026-09-08 10:00:00","author":{"name":"ExampleUser"},"count":4}],
-          [3,"https://video.twimg.com/ext_tw_video/9001/pu/vid/1280x720/example-one.mp4",{"tweet_id":7001,"content":"Mixed media in one post","date":"2026-09-08 10:00:00","author":{"name":"ExampleUser"},"num":1,"type":"video","extension":"mp4","width":1280,"height":720,"bitrate":2176000}],
-          [3,"https://video.twimg.com/ext_tw_video/9002/pu/vid/1280x720/example-two.mp4",{"tweet_id":7001,"content":"Mixed media in one post","date":"2026-09-08 10:00:00","author":{"name":"ExampleUser"},"num":2,"type":"video","extension":"mp4","width":1280,"height":720,"bitrate":2176000}],
-          [3,"https://pbs.twimg.com/media/PhotoTokenABC?format=jpg&name=orig",{"tweet_id":7001,"content":"Mixed media in one post","date":"2026-09-08 10:00:00","author":{"name":"ExampleUser"},"num":3,"type":"photo","filename":"PhotoTokenABC","extension":"jpg","width":2048,"height":1365}],
-          [3,"https://video.twimg.com/tweet_video/AnimTokenXYZ.mp4",{"tweet_id":7001,"content":"Mixed media in one post","date":"2026-09-08 10:00:00","author":{"name":"ExampleUser"},"num":4,"type":"animated_gif","filename":"AnimTokenXYZ","extension":"mp4","width":640,"height":360}],
-          [2,{"tweet_id":7002,"content":"Another video post","date":"2026-09-08 11:00:00","author":{"name":"AnotherUser"},"count":1}],
-          [3,"https://video.twimg.com/amplify_video/9003/vid/avc1/1920x1080/example-three.mp4",{"tweet_id":7002,"content":"Another video post","date":"2026-09-08 11:00:00","author":{"name":"AnotherUser"},"num":1,"type":"video","extension":"mp4","width":1920,"height":1080,"bitrate":5000000}]
+          [2,{"tweet_id":7001,"content":"Mixed media in one post","date":"2026-09-08 10:00:00","author":{"id":424242,"name":"ExampleUser"},"count":4}],
+          [3,"https://video.twimg.com/ext_tw_video/9001/pu/vid/1280x720/example-one.mp4",{"tweet_id":7001,"content":"Mixed media in one post","date":"2026-09-08 10:00:00","author":{"id":424242,"name":"ExampleUser"},"num":1,"type":"video","extension":"mp4","width":1280,"height":720,"bitrate":2176000}],
+          [3,"https://video.twimg.com/ext_tw_video/9002/pu/vid/1280x720/example-two.mp4",{"tweet_id":7001,"content":"Mixed media in one post","date":"2026-09-08 10:00:00","author":{"id":424242,"name":"ExampleUser"},"num":2,"type":"video","extension":"mp4","width":1280,"height":720,"bitrate":2176000}],
+          [3,"https://pbs.twimg.com/media/PhotoTokenABC?format=jpg&name=orig",{"tweet_id":7001,"content":"Mixed media in one post","date":"2026-09-08 10:00:00","author":{"id":424242,"name":"ExampleUser"},"num":3,"type":"photo","filename":"PhotoTokenABC","extension":"jpg","width":2048,"height":1365}],
+          [3,"https://video.twimg.com/tweet_video/AnimTokenXYZ.mp4",{"tweet_id":7001,"content":"Mixed media in one post","date":"2026-09-08 10:00:00","author":{"id":424242,"name":"ExampleUser"},"num":4,"type":"animated_gif","filename":"AnimTokenXYZ","extension":"mp4","width":640,"height":360}],
+          [2,{"tweet_id":7002,"content":"Another video post","date":"2026-09-08 11:00:00","author":{"id":525252,"name":"AnotherUser"},"count":1}],
+          [3,"https://video.twimg.com/amplify_video/9003/vid/avc1/1920x1080/example-three.mp4",{"tweet_id":7002,"content":"Another video post","date":"2026-09-08 11:00:00","author":{"id":525252,"name":"AnotherUser"},"num":1,"type":"video","extension":"mp4","width":1920,"height":1080,"bitrate":5000000}]
         ]
         JSON
             exit 0
