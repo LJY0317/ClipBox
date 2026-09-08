@@ -4,6 +4,8 @@ public enum GalleryDlError: Error, LocalizedError, Sendable {
     case unavailable
     case unsupportedCollection(String)
     case missingAccountName
+    case authenticationRequired(BrowserCookieSource)
+    case browserCookieAccessFailed(BrowserCookieSource, String)
     case scanFailed(String)
     case malformedOutput(String)
 
@@ -15,6 +17,10 @@ public enum GalleryDlError: Error, LocalizedError, Sendable {
             "gallery-dl collection support is not configured for \(name)."
         case .missingAccountName:
             "X Likes requires an X account name so ClipBox can open that account's Likes URL."
+        case .authenticationRequired(let browser):
+            "X did not receive an authenticated login session from \(browser.displayName). Open x.com in \(browser.displayName) and make sure you are signed in. If you are already signed in with Safari on macOS, ClipBox may need Full Disk Access to read Safari's cookie database: System Settings > Privacy & Security > Full Disk Access. Then reopen ClipBox, or select another browser where you are signed in to X."
+        case .browserCookieAccessFailed(let browser, let message):
+            "ClipBox could not read \(browser.displayName)'s login cookies. On macOS, allow ClipBox under System Settings > Privacy & Security > Full Disk Access, then reopen ClipBox. Details: \(message)"
         case .scanFailed(let message):
             "Could not read the X collection: \(message)"
         case .malformedOutput(let message):
@@ -58,7 +64,12 @@ public actor GalleryDlClient {
 
         let result = try ProcessRunner.run(executable: executableURL, arguments: arguments)
         guard result.exitCode == 0 else {
-            throw GalleryDlError.scanFailed(cleanError(result.stderr))
+            let detail = cleanError(result.stderr)
+            if detail.localizedCaseInsensitiveContains("permission denied") ||
+                detail.localizedCaseInsensitiveContains("operation not permitted") {
+                throw GalleryDlError.browserCookieAccessFailed(cookiesFromBrowser, detail)
+            }
+            throw GalleryDlError.scanFailed(detail)
         }
         guard let data = result.stdout.data(using: .utf8), !data.isEmpty else {
             throw GalleryDlError.malformedOutput("empty JSON output")
@@ -72,6 +83,7 @@ public actor GalleryDlClient {
             return try parseMessages(
                 messages,
                 collection: collection,
+                cookiesFromBrowser: cookiesFromBrowser,
                 mediaTypes: mediaTypes
             )
         } catch let error as GalleryDlError {
@@ -84,6 +96,7 @@ public actor GalleryDlClient {
     private func parseMessages(
         _ messages: [Any],
         collection: BuiltInCollection,
+        cookiesFromBrowser: BrowserCookieSource,
         mediaTypes: MediaTypeSelection
     ) throws -> [CollectionItem] {
         var items: [CollectionItem] = []
@@ -99,6 +112,9 @@ public actor GalleryDlClient {
                 let metadata = message.count > 1 ? message[1] as? [String: Any] : nil
                 let errorName = Self.string(metadata?["error"]) ?? "ExtractionError"
                 let detail = Self.string(metadata?["message"]) ?? "unknown gallery-dl error"
+                if errorName == "AuthRequired" {
+                    throw GalleryDlError.authenticationRequired(cookiesFromBrowser)
+                }
                 throw GalleryDlError.scanFailed("\(errorName): \(detail)")
             }
 

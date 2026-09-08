@@ -477,6 +477,38 @@ final class ClipBoxCoreTests: XCTestCase {
         }
     }
 
+    func testGalleryDlMapsXAuthRequiredToSelectedBrowserGuidance() async throws {
+        let temp = try makeTemporaryDirectory()
+        defer { try? FileManager.default.removeItem(at: temp) }
+        let fakeGalleryDl = temp.appendingPathComponent("gallery-dl")
+        try """
+        #!/bin/sh
+        cat <<'JSON'
+        [[-1,{"error":"AuthRequired","message":"authenticated cookies needed to access this timeline"}]]
+        JSON
+        """.write(to: fakeGalleryDl, atomically: true, encoding: .utf8)
+        try FileManager.default.setAttributes(
+            [.posixPermissions: 0o755],
+            ofItemAtPath: fakeGalleryDl.path
+        )
+
+        let client = GalleryDlClient(executableURL: fakeGalleryDl)
+        do {
+            _ = try await client.scanCollection(
+                .xBookmarks,
+                cookiesFromBrowser: .safari,
+                limit: 1
+            )
+            XCTFail("Expected X authentication failure")
+        } catch let error as GalleryDlError {
+            guard case .authenticationRequired(.safari) = error else {
+                return XCTFail("Unexpected error: \(error)")
+            }
+            XCTAssertTrue(error.localizedDescription.contains("Safari"))
+            XCTAssertTrue(error.localizedDescription.contains("Full Disk Access"))
+        }
+    }
+
     func testXLikesCollectionURLAcceptsHandleWithOrWithoutAtPrefix() {
         XCTAssertEqual(
             BuiltInCollection.xLikes.collectionURL(accountName: "ExampleUser"),
