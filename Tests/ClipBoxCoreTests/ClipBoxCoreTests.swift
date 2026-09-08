@@ -397,6 +397,17 @@ final class ClipBoxCoreTests: XCTestCase {
         }
     }
 
+    func testXLikesCollectionURLAcceptsHandleWithOrWithoutAtPrefix() {
+        XCTAssertEqual(
+            BuiltInCollection.xLikes.collectionURL(accountName: "ExampleUser"),
+            "https://x.com/ExampleUser/likes"
+        )
+        XCTAssertEqual(
+            BuiltInCollection.xLikes.collectionURL(accountName: "@ExampleUser"),
+            "https://x.com/ExampleUser/likes"
+        )
+    }
+
     func testHistoryExchangePreservesLargeIDsAndSpreadsheetTextSafety() async throws {
         let temp = try makeTemporaryDirectory()
         defer { try? FileManager.default.removeItem(at: temp) }

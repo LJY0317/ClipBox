@@ -280,7 +280,7 @@ struct ContentView: View {
                 }
 
                 GroupBox("Collection") {
-                    Form {
+                    VStack(alignment: .leading, spacing: 12) {
                         Picker("Source", selection: $collectionModel.selectedCollection) {
                             ForEach(BuiltInCollection.allCases) { collection in
                                 Text(collection.displayName).tag(collection)
@@ -303,8 +303,18 @@ struct ContentView: View {
                         }
 
                         if collectionModel.selectedCollection.requiresAccountName {
-                            TextField("X account handle", text: $collectionModel.xAccountName)
-                                .textFieldStyle(.roundedBorder)
+                            LabeledContent("X account handle") {
+                                HStack(spacing: 4) {
+                                    Text("@")
+                                        .foregroundStyle(.secondary)
+                                    TextField("username", text: xHandleBinding)
+                                        .textFieldStyle(.roundedBorder)
+                                        .frame(minWidth: 220)
+                                }
+                            }
+                            Text("Enter the username only. The @ prefix is supplied by ClipBox.")
+                                .font(.caption)
+                                .foregroundStyle(.secondary)
                         }
 
                         Toggle("Scan entire collection", isOn: $collectionModel.scanAll)
@@ -653,6 +663,18 @@ struct ContentView: View {
         Binding(
             get: { collectionModel.isMediaTypeEnabled(type) },
             set: { collectionModel.setMediaType(type, enabled: $0) }
+        )
+    }
+
+    private var xHandleBinding: Binding<String> {
+        Binding(
+            get: { collectionModel.xAccountName },
+            set: { value in
+                let trimmed = value.trimmingCharacters(in: .whitespacesAndNewlines)
+                collectionModel.xAccountName = trimmed.hasPrefix("@")
+                    ? String(trimmed.dropFirst())
+                    : trimmed
+            }
         )
     }
 
