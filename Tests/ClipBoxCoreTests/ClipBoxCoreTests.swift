@@ -372,6 +372,86 @@ final class ClipBoxCoreTests: XCTestCase {
         XCTAssertEqual(secondSync.skippedAlreadyArchived, 5)
     }
 
+    func testXBatchSyncDeduplicatesLikesAndBookmarksButPreservesMemberships() async throws {
+        let temp = try makeTemporaryDirectory()
+        defer { try? FileManager.default.removeItem(at: temp) }
+
+        let fakeGalleryDl = temp.appendingPathComponent("gallery-dl")
+        try fakeGalleryDlOverlappingCollectionsScript.write(to: fakeGalleryDl, atomically: true, encoding: .utf8)
+        try FileManager.default.setAttributes(
+            [.posixPermissions: 0o755],
+            ofItemAtPath: fakeGalleryDl.path
+        )
+
+        let fakeCurl = temp.appendingPathComponent("curl")
+        try fakeCurlScript.write(to: fakeCurl, atomically: true, encoding: .utf8)
+        try FileManager.default.setAttributes(
+            [.posixPermissions: 0o755],
+            ofItemAtPath: fakeCurl.path
+        )
+
+        let store = try ArchiveStore(databaseURL: temp.appendingPathComponent("x-batch.sqlite3"))
+        let service = try CollectionSyncService(
+            archive: store,
+            galleryDl: GalleryDlClient(executableURL: fakeGalleryDl),
+            directDownloader: DirectMediaDownloader(executableURL: fakeCurl)
+        )
+        let selectedCollections: [BuiltInCollection] = [.xLikes, .xBookmarks]
+
+        let preview = try await service.scan(
+            collections: selectedCollections,
+            accountName: "ExampleUser",
+            cookiesFromBrowser: .safari,
+            limit: 100
+        )
+        XCTAssertEqual(preview.scannedOccurrences, 4)
+        XCTAssertEqual(preview.uniqueMediaCount, 3)
+        XCTAssertEqual(preview.duplicateOccurrencesCollapsed, 1)
+        XCTAssertEqual(preview.unarchivedCount, 3)
+        XCTAssertEqual(preview.items.first { $0.item.mediaID == "9001" }?.collections, selectedCollections)
+        XCTAssertEqual(preview.items.first { $0.item.mediaID == "9002" }?.collections, [.xLikes])
+        XCTAssertEqual(preview.items.first { $0.item.mediaID == "9003" }?.collections, [.xBookmarks])
+
+        let firstSync = try await service.sync(
+            collections: selectedCollections,
+            accountName: "ExampleUser",
+            cookiesFromBrowser: .safari,
+            outputDirectory: temp,
+            limit: 100
+        )
+        XCTAssertEqual(firstSync.scannedOccurrences, 4)
+        XCTAssertEqual(firstSync.uniqueMedia, 3)
+        XCTAssertEqual(firstSync.duplicatesCollapsed, 1)
+        XCTAssertEqual(firstSync.unarchived, 3)
+        XCTAssertEqual(firstSync.downloaded, 3)
+        XCTAssertEqual(firstSync.skippedAlreadyArchived, 0)
+        XCTAssertEqual(firstSync.failed, 0)
+
+        let archiveCount = try await store.count()
+        let likesMembershipCount = try await store.collectionCount(site: "twitter", collectionName: "likes")
+        let bookmarkMembershipCount = try await store.collectionCount(site: "twitter", collectionName: "bookmarks")
+        XCTAssertEqual(archiveCount, 3)
+        XCTAssertEqual(likesMembershipCount, 2)
+        XCTAssertEqual(bookmarkMembershipCount, 2)
+
+        let downloadedFiles = try FileManager.default.contentsOfDirectory(
+            at: temp,
+            includingPropertiesForKeys: nil
+        ).filter { ["mp4", "jpg"].contains($0.pathExtension.lowercased()) }
+        XCTAssertEqual(downloadedFiles.count, 3)
+
+        let secondSync = try await service.sync(
+            collections: selectedCollections,
+            accountName: "ExampleUser",
+            cookiesFromBrowser: .safari,
+            outputDirectory: temp,
+            limit: 100
+        )
+        XCTAssertEqual(secondSync.downloaded, 0)
+        XCTAssertEqual(secondSync.skippedAlreadyArchived, 3)
+        XCTAssertEqual(secondSync.duplicatesCollapsed, 1)
+    }
+
     func testGalleryDlXLikesRequiresAccountName() async throws {
         let temp = try makeTemporaryDirectory()
         defer { try? FileManager.default.removeItem(at: temp) }
@@ -707,6 +787,30 @@ final class ClipBoxCoreTests: XCTestCase {
         ]
         JSON
             exit 0
+            ;;
+        esac
+        """
+    }
+
+    private var fakeGalleryDlOverlappingCollectionsScript: String {
+        """
+        #!/bin/sh
+        case " $* " in
+          *"/likes"*)
+            cat <<'JSON'
+        [
+          [3,"https://video.twimg.com/ext_tw_video/9001/pu/vid/1280x720/shared.mp4",{"tweet_id":7001,"content":"Shared media","date":"2026-09-08 10:00:00","author":{"id":424242,"name":"ExampleUser"},"num":1,"type":"video","extension":"mp4","width":1280,"height":720,"bitrate":2176000}],
+          [3,"https://video.twimg.com/ext_tw_video/9002/pu/vid/1280x720/likes-only.mp4",{"tweet_id":7002,"content":"Likes only","date":"2026-09-08 11:00:00","author":{"id":424242,"name":"ExampleUser"},"num":1,"type":"video","extension":"mp4","width":1280,"height":720,"bitrate":2176000}]
+        ]
+        JSON
+            ;;
+          *)
+            cat <<'JSON'
+        [
+          [3,"https://video.twimg.com/ext_tw_video/9001/pu/vid/1280x720/shared.mp4",{"tweet_id":7001,"content":"Shared media","date":"2026-09-08 10:00:00","author":{"id":424242,"name":"ExampleUser"},"num":1,"type":"video","extension":"mp4","width":1280,"height":720,"bitrate":2176000}],
+          [3,"https://video.twimg.com/ext_tw_video/9003/pu/vid/1920x1080/bookmarks-only.mp4",{"tweet_id":7003,"content":"Bookmarks only","date":"2026-09-08 12:00:00","author":{"id":525252,"name":"AnotherUser"},"num":1,"type":"video","extension":"mp4","width":1920,"height":1080,"bitrate":5000000}]
+        ]
+        JSON
             ;;
         esac
         """

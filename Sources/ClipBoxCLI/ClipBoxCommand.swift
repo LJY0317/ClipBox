@@ -301,26 +301,53 @@ struct ClipBoxCommand {
     private static func runCollectionScan(arguments: [String], json: Bool) async throws {
         let options = try parseCollectionOptions(arguments: arguments, allowDryRun: false)
         let service = try CollectionSyncService()
+        if options.collections.count == 1, let collection = options.collections.first {
+            let result = try await service.scan(
+                collection: collection,
+                accountName: options.accountName,
+                cookiesFromBrowser: options.browser,
+                mediaTypes: options.mediaTypes,
+                limit: options.limit
+            )
+
+            if json {
+                try printJSON(result)
+                return
+            }
+
+            print(collection.displayName)
+            print("scanned\t\(result.items.count)")
+            print("unarchived\t\(result.unarchivedCount)")
+            print("")
+            for item in result.items {
+                let state = item.alreadyDownloaded ? "archived" : (item.previouslySeen ? "seen" : "new")
+                print("\(state)\t\(item.item.mediaType.rawValue)\t\(item.item.mediaID)\t\(item.item.title ?? "(untitled)")")
+            }
+            return
+        }
+
         let result = try await service.scan(
-            collection: options.collection,
+            collections: options.collections,
             accountName: options.accountName,
             cookiesFromBrowser: options.browser,
             mediaTypes: options.mediaTypes,
             limit: options.limit
         )
-
         if json {
             try printJSON(result)
             return
         }
 
-        print(options.collection.displayName)
-        print("scanned\t\(result.items.count)")
+        print(collectionBatchDisplayName(options.collections))
+        print("collection-entries\t\(result.scannedOccurrences)")
+        print("unique-media\t\(result.uniqueMediaCount)")
+        print("overlap-merged\t\(result.duplicateOccurrencesCollapsed)")
         print("unarchived\t\(result.unarchivedCount)")
         print("")
         for item in result.items {
             let state = item.alreadyDownloaded ? "archived" : (item.previouslySeen ? "seen" : "new")
-            print("\(state)\t\(item.item.mediaType.rawValue)\t\(item.item.mediaID)\t\(item.item.title ?? "(untitled)")")
+            let memberships = item.collections.map(\.collectionName).joined(separator: "+")
+            print("\(state)\t\(memberships)\t\(item.item.mediaType.rawValue)\t\(item.item.mediaID)\t\(item.item.title ?? "(untitled)")")
         }
     }
 
@@ -330,8 +357,39 @@ struct ClipBoxCommand {
             URL(fileURLWithPath: NSString(string: $0).expandingTildeInPath, isDirectory: true)
         }
         let service = try CollectionSyncService()
+        if options.collections.count == 1, let collection = options.collections.first {
+            let result = try await service.sync(
+                collection: collection,
+                accountName: options.accountName,
+                cookiesFromBrowser: options.browser,
+                outputDirectory: outputURL,
+                mediaTypes: options.mediaTypes,
+                limit: options.limit,
+                dryRun: options.dryRun
+            )
+
+            if json {
+                try printJSON(result)
+                return
+            }
+
+            print("\(collection.displayName) \(result.dryRun ? "preview" : "sync")")
+            print("  scanned\t\(result.scanned)")
+            print("  unarchived\t\(result.unarchived)")
+            print("  downloaded\t\(result.downloaded)")
+            print("  skipped-archived\t\(result.skippedAlreadyArchived)")
+            print("  failed\t\(result.failed)")
+            if result.dryRun {
+                print("  note\tDry run: no collection checkpoint or downloads were written.")
+            }
+            for failure in result.failures {
+                print("  failure\t\(failure.mediaID)\t\(failure.error)")
+            }
+            return
+        }
+
         let result = try await service.sync(
-            collection: options.collection,
+            collections: options.collections,
             accountName: options.accountName,
             cookiesFromBrowser: options.browser,
             outputDirectory: outputURL,
@@ -339,14 +397,15 @@ struct ClipBoxCommand {
             limit: options.limit,
             dryRun: options.dryRun
         )
-
         if json {
             try printJSON(result)
             return
         }
 
-        print("\(options.collection.displayName) \(result.dryRun ? "preview" : "sync")")
-        print("  scanned\t\(result.scanned)")
+        print("\(collectionBatchDisplayName(options.collections)) \(result.dryRun ? "preview" : "sync")")
+        print("  collection-entries\t\(result.scannedOccurrences)")
+        print("  unique-media\t\(result.uniqueMedia)")
+        print("  overlap-merged\t\(result.duplicatesCollapsed)")
         print("  unarchived\t\(result.unarchived)")
         print("  downloaded\t\(result.downloaded)")
         print("  skipped-archived\t\(result.skippedAlreadyArchived)")
@@ -602,7 +661,8 @@ struct ClipBoxCommand {
         print("  clipbox sync youtube <liked|watch-later> [--media-types videos] [--browser safari] [--limit <n>|--all] [--dry-run] [--output <folder>] [--json]")
         print("  clipbox scan x bookmarks [--media-types videos,photos,animated] [--browser safari] [--limit <n>|--all] [--json]")
         print("  clipbox scan x likes --username <handle> [--media-types videos,photos,animated] [--browser safari] [--limit <n>|--all] [--json]")
-        print("  clipbox sync x <bookmarks|likes> [--username <handle>] [--media-types videos,photos,animated] [--browser safari] [--limit <n>|--all] [--dry-run] [--output <folder>] [--json]")
+        print("  clipbox scan x all --username <handle> [--media-types videos,photos,animated] [--browser safari] [--limit <n>|--all] [--json]")
+        print("  clipbox sync x <bookmarks|likes|all> [--username <handle>] [--media-types videos,photos,animated] [--browser safari] [--limit <n>|--all] [--dry-run] [--output <folder>] [--json]")
         print("  clipbox history [--limit <n>] [--json]")
         print("  clipbox history export <file.{jsonl|csv|xlsx}> [--format <format>] [--json]")
         print("  clipbox history import <file.{jsonl|csv}> [--format <format>] [--json]")
@@ -654,13 +714,25 @@ struct ClipBoxCommand {
         arguments: [String],
         allowDryRun: Bool
     ) throws -> CollectionCommandOptions {
-        guard arguments.count >= 2,
-              let collection = BuiltInCollection.resolve(
-                site: arguments[0],
-                collection: arguments[1]
-              ) else {
+        guard arguments.count >= 2 else {
             throw CLIError.missingArgument(
-                "Collection must be `youtube liked`, `youtube watch-later`, `x bookmarks`, or `x likes`."
+                "Collection must be `youtube liked`, `youtube watch-later`, `x bookmarks`, `x likes`, or `x all`."
+            )
+        }
+
+        let site = arguments[0].lowercased()
+        let collectionToken = arguments[1].lowercased()
+        let collections: [BuiltInCollection]
+        if ["x", "twitter"].contains(site), ["all", "both"].contains(collectionToken) {
+            collections = [.xLikes, .xBookmarks]
+        } else if let collection = BuiltInCollection.resolve(
+            site: arguments[0],
+            collection: arguments[1]
+        ) {
+            collections = [collection]
+        } else {
+            throw CLIError.missingArgument(
+                "Collection must be `youtube liked`, `youtube watch-later`, `x bookmarks`, `x likes`, or `x all`."
             )
         }
 
@@ -677,9 +749,9 @@ struct ClipBoxCommand {
         let mediaTypes = try parseMediaTypes(rawMediaTypes)
         let output = allowDryRun ? try removeOption("--output", from: &remaining) : nil
 
-        if collection.requiresAccountName,
+        if collections.contains(where: \.requiresAccountName),
            accountName?.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty != false {
-            throw CLIError.missingArgument("X Likes requires --username <handle>.")
+            throw CLIError.missingArgument("X Likes (including `x all`) requires --username <handle>.")
         }
 
         if all, rawLimit != nil {
@@ -702,7 +774,7 @@ struct ClipBoxCommand {
         }
 
         return CollectionCommandOptions(
-            collection: collection,
+            collections: collections,
             browser: browser,
             accountName: accountName,
             mediaTypes: mediaTypes,
@@ -710,6 +782,13 @@ struct ClipBoxCommand {
             dryRun: dryRun,
             output: output
         )
+    }
+
+    private static func collectionBatchDisplayName(_ collections: [BuiltInCollection]) -> String {
+        if collections == [.xLikes, .xBookmarks] || collections == [.xBookmarks, .xLikes] {
+            return "X Likes + Bookmarks"
+        }
+        return collections.map(\.displayName).joined(separator: " + ")
     }
 
     private static func parseMediaTypes(_ rawValue: String?) throws -> MediaTypeSelection {
@@ -792,7 +871,7 @@ private struct PathsPayload: Codable {
 }
 
 private struct CollectionCommandOptions {
-    let collection: BuiltInCollection
+    let collections: [BuiltInCollection]
     let browser: BrowserCookieSource
     let accountName: String?
     let mediaTypes: MediaTypeSelection

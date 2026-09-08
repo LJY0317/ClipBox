@@ -278,6 +278,52 @@ public struct CollectionScanResult: Codable, Equatable, Sendable {
     }
 }
 
+public struct CollectionBatchScanItem: Codable, Equatable, Sendable, Identifiable {
+    public var id: String { item.id }
+    public let item: CollectionItem
+    public let collections: [BuiltInCollection]
+    public let previouslySeenCollections: [BuiltInCollection]
+    public let alreadyDownloaded: Bool
+
+    public init(
+        item: CollectionItem,
+        collections: [BuiltInCollection],
+        previouslySeenCollections: [BuiltInCollection],
+        alreadyDownloaded: Bool
+    ) {
+        self.item = item
+        self.collections = collections
+        self.previouslySeenCollections = previouslySeenCollections
+        self.alreadyDownloaded = alreadyDownloaded
+    }
+
+    public var previouslySeen: Bool {
+        !previouslySeenCollections.isEmpty
+    }
+}
+
+public struct CollectionBatchScanResult: Codable, Equatable, Sendable {
+    public let collections: [BuiltInCollection]
+    public let items: [CollectionBatchScanItem]
+    public let scannedOccurrences: Int
+    public let uniqueMediaCount: Int
+    public let duplicateOccurrencesCollapsed: Int
+    public let unarchivedCount: Int
+
+    public init(
+        collections: [BuiltInCollection],
+        items: [CollectionBatchScanItem],
+        scannedOccurrences: Int
+    ) {
+        self.collections = collections
+        self.items = items
+        self.scannedOccurrences = scannedOccurrences
+        self.uniqueMediaCount = items.count
+        self.duplicateOccurrencesCollapsed = max(0, scannedOccurrences - items.count)
+        self.unarchivedCount = items.lazy.filter { !$0.alreadyDownloaded }.count
+    }
+}
+
 public struct CollectionSyncFailure: Codable, Equatable, Sendable, Identifiable {
     public var id: String { "\(site):\(mediaID)" }
     public let site: String
@@ -315,6 +361,43 @@ public struct CollectionSyncResult: Codable, Equatable, Sendable {
     ) {
         self.collection = collection
         self.scanned = scanned
+        self.unarchived = unarchived
+        self.downloaded = downloaded
+        self.skippedAlreadyArchived = skippedAlreadyArchived
+        self.failed = failed
+        self.dryRun = dryRun
+        self.failures = failures
+    }
+}
+
+public struct CollectionBatchSyncResult: Codable, Equatable, Sendable {
+    public let collections: [BuiltInCollection]
+    public let scannedOccurrences: Int
+    public let uniqueMedia: Int
+    public let duplicatesCollapsed: Int
+    public let unarchived: Int
+    public let downloaded: Int
+    public let skippedAlreadyArchived: Int
+    public let failed: Int
+    public let dryRun: Bool
+    public let failures: [CollectionSyncFailure]
+
+    public init(
+        collections: [BuiltInCollection],
+        scannedOccurrences: Int,
+        uniqueMedia: Int,
+        duplicatesCollapsed: Int,
+        unarchived: Int,
+        downloaded: Int,
+        skippedAlreadyArchived: Int,
+        failed: Int,
+        dryRun: Bool,
+        failures: [CollectionSyncFailure]
+    ) {
+        self.collections = collections
+        self.scannedOccurrences = scannedOccurrences
+        self.uniqueMedia = uniqueMedia
+        self.duplicatesCollapsed = duplicatesCollapsed
         self.unarchived = unarchived
         self.downloaded = downloaded
         self.skippedAlreadyArchived = skippedAlreadyArchived

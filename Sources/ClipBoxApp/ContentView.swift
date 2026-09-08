@@ -281,9 +281,9 @@ struct ContentView: View {
 
                 GroupBox("Collection") {
                     VStack(alignment: .leading, spacing: 12) {
-                        Picker("Source", selection: $collectionModel.selectedCollection) {
-                            ForEach(BuiltInCollection.allCases) { collection in
-                                Text(collection.displayName).tag(collection)
+                        Picker("Source", selection: collectionSourceBinding) {
+                            ForEach(CollectionSourceMode.allCases) { source in
+                                Text(source.displayName).tag(source)
                             }
                         }
 
@@ -302,7 +302,22 @@ struct ContentView: View {
                             }
                         }
 
-                        if collectionModel.selectedCollection.requiresAccountName {
+                        if collectionModel.isXMode {
+                            LabeledContent("X collections") {
+                                HStack(spacing: 16) {
+                                    Toggle("Likes", isOn: xCollectionBinding(.xLikes))
+                                        .toggleStyle(.checkbox)
+                                    Toggle("Bookmarks", isOn: xCollectionBinding(.xBookmarks))
+                                        .toggleStyle(.checkbox)
+                                }
+                            }
+
+                            Text("When the same media is in both collections, ClipBox merges it by media ID and downloads one file while remembering both memberships.")
+                                .font(.caption)
+                                .foregroundStyle(.secondary)
+                        }
+
+                        if collectionModel.requiresXAccountName {
                             LabeledContent("X account handle") {
                                 HStack(spacing: 4) {
                                     Text("@")
@@ -355,7 +370,7 @@ struct ContentView: View {
                     Button("Preview") {
                         collectionModel.preview()
                     }
-                    .disabled(collectionModel.isWorking || !collectionModel.hasSelectedMediaTypes)
+                    .disabled(!collectionModel.canRun)
 
                     Spacer()
 
@@ -368,7 +383,13 @@ struct ContentView: View {
                         collectionModel.sync()
                     }
                     .buttonStyle(.borderedProminent)
-                    .disabled(collectionModel.isWorking || !collectionModel.hasSelectedMediaTypes)
+                    .disabled(!collectionModel.canRun)
+                }
+
+                if collectionModel.isXMode && !collectionModel.hasSelectedCollections {
+                    Label("Select Likes, Bookmarks, or both.", systemImage: "exclamationmark.triangle")
+                        .font(.caption)
+                        .foregroundStyle(.orange)
                 }
 
                 if !collectionModel.hasSelectedMediaTypes {
@@ -377,10 +398,16 @@ struct ContentView: View {
                         .foregroundStyle(.orange)
                 }
 
+                if !collectionModel.hasRequiredXAccountName {
+                    Label("Enter the X username for Likes, or turn Likes off to sync Bookmarks only.", systemImage: "exclamationmark.triangle")
+                        .font(.caption)
+                        .foregroundStyle(.orange)
+                }
+
                 if let scanResult = collectionModel.scanResult {
                     GroupBox("Preview") {
                         VStack(alignment: .leading, spacing: 8) {
-                            Text("Scanned \(scanResult.items.count) · Unarchived \(scanResult.unarchivedCount)")
+                            Text("Collection entries \(scanResult.scannedOccurrences) · Unique media \(scanResult.uniqueMediaCount) · Overlap merged \(scanResult.duplicateOccurrencesCollapsed) · Unarchived \(scanResult.unarchivedCount)")
                                 .font(.headline)
 
                             ForEach(scanResult.items.prefix(50)) { item in
@@ -392,7 +419,7 @@ struct ContentView: View {
                                     VStack(alignment: .leading, spacing: 2) {
                                         Text(item.item.title ?? "Untitled")
                                             .lineLimit(1)
-                                        Text("\(item.item.mediaType.displayName) · \(item.item.mediaID)")
+                                        Text("\(collectionMembershipLabel(item.collections)) · \(item.item.mediaType.displayName) · \(item.item.mediaID)")
                                             .font(.caption.monospaced())
                                             .foregroundStyle(.secondary)
                                             .textSelection(.enabled)
@@ -418,7 +445,9 @@ struct ContentView: View {
                 if let syncResult = collectionModel.syncResult {
                     GroupBox("Last sync") {
                         Grid(alignment: .leading, horizontalSpacing: 18, verticalSpacing: 6) {
-                            GridRow { Text("Scanned").foregroundStyle(.secondary); Text("\(syncResult.scanned)") }
+                            GridRow { Text("Collection entries").foregroundStyle(.secondary); Text("\(syncResult.scannedOccurrences)") }
+                            GridRow { Text("Unique media").foregroundStyle(.secondary); Text("\(syncResult.uniqueMedia)") }
+                            GridRow { Text("Overlap merged").foregroundStyle(.secondary); Text("\(syncResult.duplicatesCollapsed)") }
                             GridRow { Text("Unarchived").foregroundStyle(.secondary); Text("\(syncResult.unarchived)") }
                             GridRow { Text("Downloaded").foregroundStyle(.secondary); Text("\(syncResult.downloaded)") }
                             GridRow { Text("Skipped").foregroundStyle(.secondary); Text("\(syncResult.skippedAlreadyArchived)") }
@@ -666,16 +695,36 @@ struct ContentView: View {
         )
     }
 
+    private var collectionSourceBinding: Binding<CollectionSourceMode> {
+        Binding(
+            get: { collectionModel.selectedSource },
+            set: { collectionModel.setSource($0) }
+        )
+    }
+
+    private func xCollectionBinding(_ collection: BuiltInCollection) -> Binding<Bool> {
+        Binding(
+            get: { collectionModel.isXCollectionEnabled(collection) },
+            set: { collectionModel.setXCollection(collection, enabled: $0) }
+        )
+    }
+
     private var xHandleBinding: Binding<String> {
         Binding(
             get: { collectionModel.xAccountName },
-            set: { value in
-                let trimmed = value.trimmingCharacters(in: .whitespacesAndNewlines)
-                collectionModel.xAccountName = trimmed.hasPrefix("@")
-                    ? String(trimmed.dropFirst())
-                    : trimmed
-            }
+            set: { collectionModel.setXAccountName($0) }
         )
+    }
+
+    private func collectionMembershipLabel(_ collections: [BuiltInCollection]) -> String {
+        collections.map { collection in
+            switch collection {
+            case .xLikes: "Likes"
+            case .xBookmarks: "Bookmarks"
+            case .youtubeLiked: "YouTube Likes"
+            case .youtubeWatchLater: "Watch Later"
+            }
+        }.joined(separator: " + ")
     }
 
     private func choosePrivateAdapterOutputDirectory() {

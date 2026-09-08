@@ -31,7 +31,7 @@ Its core idea is simple: download media once, remember it permanently, and keep 
 - SwiftUI download screen with URL analysis, available-format preview, output-folder selection, download status, and archive history.
 - Portable `.clipboxbackup` history creation and merge restore from both the CLI and macOS Settings UI.
 - YouTube Liked Videos and Watch Later preview/sync using a user-selected local browser session; already-downloaded media is skipped from the SQLite archive even if its file has moved elsewhere.
-- X Likes and Bookmarks preview/sync through `gallery-dl`, with photos, videos, and animated media selectable independently. Mixed-media posts remain separate archive items by media identifier.
+- X Likes and Bookmarks preview/sync through `gallery-dl`, with photos, videos, and animated media selectable independently. The native UI can scan Likes + Bookmarks together, collapse overlapping entries by canonical media ID, download one file, and still record both collection memberships. Media that exists in only one collection remains included in the union.
 - Human-readable history export to XLSX/CSV/JSONL, plus merge import from CSV/JSONL. XLSX identifiers are emitted as text cells to preserve long platform IDs exactly.
 - AI-agent-friendly private adapter scaffolds and a JSON executable protocol. Site-specific adapter files live only under ClipBox's Application Support directory and can be scanned/synced from both the CLI and native GUI.
 
@@ -56,6 +56,7 @@ swift run clipbox scan youtube liked --browser safari --limit 100
 swift run clipbox sync youtube watch-later --browser safari --dry-run
 swift run clipbox scan x bookmarks --media-types videos,photos,animated --browser safari --limit 100
 swift run clipbox sync x likes --username '<handle>' --media-types videos,photos --browser safari --dry-run
+swift run clipbox sync x all --username '<handle>' --media-types videos,photos,animated --browser safari --dry-run
 swift run clipbox history export "$HOME/Downloads/ClipBox History.xlsx"
 swift run clipbox history import "$HOME/Downloads/ClipBox History.csv"
 swift run clipbox adapter init my-private-adapter
@@ -68,6 +69,8 @@ Private adapter customization is intentionally local. `clipbox adapter init` cre
 Authenticated collection commands pass only the selected browser name to the extraction tool's browser-cookie support. ClipBox does not export browser cookies into its archive database or public repository. The X Likes handle is supplied at runtime and is not persisted by the current built-in collection UI/CLI.
 
 Built-in collection media types default to Videos + Photos + Animated media. The native Collections UI exposes them as checkboxes, and the CLI can override them with `--media-types`. X photos use gallery-dl's original-size image URL when available; X animated GIF-style media is kept in the MP4 form served by X rather than being re-encoded into a GIF.
+
+For X, the native Collections UI defaults to selecting both Likes and Bookmarks. ClipBox treats the selected collections as a union for downloading: the same `site + media ID` is downloaded once even if it appears in both collections, while the SQLite membership table separately records that it was seen in Likes, Bookmarks, or both. The CLI exposes the same behavior as `clipbox scan x all` and `clipbox sync x all`.
 
 From another working directory, provide the package path explicitly:
 

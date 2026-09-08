@@ -33,6 +33,7 @@
 - [x] `--json` for current machine-readable commands
 - [x] `--output` and `--force` for URL downloads
 - [x] `--dry-run`, `--limit`, and `--all` for current collection sync
+- [x] `x all` union scan/sync with media-ID deduplication across Likes and Bookmarks
 - [ ] Published-date filters and richer collection range policies
 
 ## Phase 3 - Public adapters
@@ -41,6 +42,7 @@
 - [x] X public URL support through yt-dlp
 - [x] Initial X Likes/Bookmarks integration through gallery-dl and locally read browser cookies
 - [x] X photo/video/animated-media filtering with complete mixed-post preservation
+- [x] X Likes + Bookmarks union sync with one physical download per media ID and separate collection memberships
 - [x] YouTube URL support
 - [x] YouTube Liked/Watch Later integration through locally read browser cookies
 
@@ -63,6 +65,7 @@
 - [x] Functional URL analysis/download view
 - [x] Initial YouTube and X collection preview/synchronization view
 - [x] Media-type checkboxes for videos, photos, and animated media
+- [x] Multi-select X Likes/Bookmarks with overlap counts and one-click union sync
 - [x] Persisted output location picker
 - [x] Best-quality default and format inventory preview
 - [x] Basic progress, error, and archive-history views
