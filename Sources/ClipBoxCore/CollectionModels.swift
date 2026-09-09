@@ -1,6 +1,6 @@
 import Foundation
 
-public enum BrowserCookieSource: String, CaseIterable, Codable, Sendable {
+public enum BrowserCookieSource: String, CaseIterable, Codable, Sendable, Hashable {
     case safari
     case chrome
     case chromium
@@ -159,10 +159,14 @@ public enum BuiltInCollection: String, CaseIterable, Codable, Sendable, Identifi
         }
     }
 
-    private static func normalizedAccountName(_ value: String?) -> String? {
-        value?
-            .trimmingCharacters(in: .whitespacesAndNewlines)
+    public static func normalizedAccountName(_ value: String?) -> String? {
+        guard let value else { return nil }
+        let handle = value.trimmingCharacters(in: .whitespacesAndNewlines)
             .trimmingCharacters(in: CharacterSet(charactersIn: "@"))
+        guard (1...15).contains(handle.utf8.count), handle.utf8.allSatisfy({
+            (65...90).contains($0) || (97...122).contains($0) || (48...57).contains($0) || $0 == 95
+        }) else { return nil }
+        return handle
     }
 }
 
@@ -178,6 +182,8 @@ public struct CollectionItem: Codable, Equatable, Sendable, Identifiable {
     public let creator: String?
     public let creatorID: String?
     public let publishedAt: String?
+    public var bookmarkedAt: String? = nil
+    public let thumbnailURL: String?
     public let mediaType: MediaAssetType
     public let directMediaURL: String?
     public let extensionName: String?
@@ -195,6 +201,7 @@ public struct CollectionItem: Codable, Equatable, Sendable, Identifiable {
         creator: String? = nil,
         creatorID: String? = nil,
         publishedAt: String? = nil,
+        thumbnailURL: String? = nil,
         mediaType: MediaAssetType = .video,
         directMediaURL: String? = nil,
         extensionName: String? = nil,
@@ -211,6 +218,7 @@ public struct CollectionItem: Codable, Equatable, Sendable, Identifiable {
         self.creator = creator
         self.creatorID = creatorID
         self.publishedAt = publishedAt
+        self.thumbnailURL = thumbnailURL
         self.mediaType = mediaType
         self.directMediaURL = directMediaURL
         self.extensionName = extensionName
@@ -225,9 +233,10 @@ public struct CollectionItem: Codable, Equatable, Sendable, Identifiable {
 }
 
 public struct CollectionMembershipRecord: Codable, Equatable, Sendable, Identifiable {
-    public var id: String { "\(site):\(collectionName):\(mediaID)" }
+    public var id: String { "\(site):\(ownerID ?? "unknown"):\(collectionName):\(mediaID)" }
 
     public let site: String
+    public let ownerID: String?
     public let collectionName: String
     public let mediaID: String
     public let sourceURL: String?
@@ -236,6 +245,7 @@ public struct CollectionMembershipRecord: Codable, Equatable, Sendable, Identifi
 
     public init(
         site: String,
+        ownerID: String? = nil,
         collectionName: String,
         mediaID: String,
         sourceURL: String?,
@@ -243,6 +253,7 @@ public struct CollectionMembershipRecord: Codable, Equatable, Sendable, Identifi
         lastSeenAt: String
     ) {
         self.site = site
+        self.ownerID = ownerID
         self.collectionName = collectionName
         self.mediaID = mediaID
         self.sourceURL = sourceURL
@@ -303,6 +314,8 @@ public struct CollectionBatchScanItem: Codable, Equatable, Sendable, Identifiabl
 }
 
 public struct CollectionBatchScanResult: Codable, Equatable, Sendable {
+    public var collectionItems: [CollectionItem]? = nil
+    public var diagnostics: [CollectionDiagnostic]? = nil
     public let collections: [BuiltInCollection]
     public let items: [CollectionBatchScanItem]
     public let scannedOccurrences: Int

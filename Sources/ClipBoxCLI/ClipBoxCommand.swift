@@ -60,6 +60,9 @@ struct ClipBoxCommand {
         case "download":
             try await runDownload(arguments: arguments, json: wantsJSON)
 
+        case "session":
+            try await runSession(arguments: arguments)
+
         case "scan":
             try await runCollectionScan(arguments: arguments, json: wantsJSON)
 
@@ -161,7 +164,7 @@ struct ClipBoxCommand {
     ) async throws {
         guard arguments.count >= 2 else {
             throw CLIError.missingArgument(
-                "Usage: clipbox adapter \(subcommand) <id> <collection> [--browser safari] [--limit <n>|--all] [--dry-run] [--output <folder>] [--json]"
+                "Usage: clipbox adapter \(subcommand) <id> <collection> [--browser chrome] [--limit <n>|--all] [--dry-run] [--output <folder>] [--json]"
             )
         }
         let adapterID = arguments[0]
@@ -298,6 +301,34 @@ struct ClipBoxCommand {
         }
     }
 
+    private static func runSession(arguments: [String]) async throws {
+        var remaining = arguments
+        let operation = remaining.isEmpty ? "list" : remaining.removeFirst()
+        if operation == "list", remaining.isEmpty {
+            let discovery = BrowserSessionDiscovery.report()
+            for session in discovery.sessions {
+                print("\(session.browser.rawValue)\t\(discovery.labels[session.id] ?? session.displayName)")
+            }
+            for issue in discovery.issues {
+                print("issue\t\(issue.browser.rawValue)\t\(issue.kind.rawValue)\t\(issue.message)")
+            }
+            return
+        }
+        guard operation == "check" else {
+            throw CLIError.invalidArgument("Usage: clipbox session list | check --browser <browser> [--profile <directory>] [--container <name>] [--username <expected-handle>]")
+        }
+        let browser = try parseBrowser(try removeOption("--browser", from: &remaining) ?? "chrome") ?? .chrome
+        let profile = try removeOption("--profile", from: &remaining)
+        let container = try removeOption("--container", from: &remaining)
+        let username = try removeOption("--username", from: &remaining)
+        guard remaining.isEmpty else { throw CLIError.invalidArgument("Unexpected session check arguments") }
+        let result = try await GalleryDlClient().checkSession(
+            BrowserSession(browser: browser, profile: profile, container: container), accountName: username
+        )
+        print("\(browser.displayName)\t\(result.connected ? "connected" : "not connected")\t\(result.message)")
+        if !result.connected { throw CLIError.invalidArgument("X session check failed") }
+    }
+
     private static func runCollectionScan(arguments: [String], json: Bool) async throws {
         let options = try parseCollectionOptions(arguments: arguments, allowDryRun: false)
         let service = try CollectionSyncService()
@@ -306,6 +337,8 @@ struct ClipBoxCommand {
                 collection: collection,
                 accountName: options.accountName,
                 cookiesFromBrowser: options.browser,
+                browserProfile: options.profile,
+                browserContainer: options.container,
                 mediaTypes: options.mediaTypes,
                 limit: options.limit
             )
@@ -330,6 +363,8 @@ struct ClipBoxCommand {
             collections: options.collections,
             accountName: options.accountName,
             cookiesFromBrowser: options.browser,
+                browserProfile: options.profile,
+                browserContainer: options.container,
             mediaTypes: options.mediaTypes,
             limit: options.limit
         )
@@ -362,6 +397,8 @@ struct ClipBoxCommand {
                 collection: collection,
                 accountName: options.accountName,
                 cookiesFromBrowser: options.browser,
+                browserProfile: options.profile,
+                browserContainer: options.container,
                 outputDirectory: outputURL,
                 mediaTypes: options.mediaTypes,
                 limit: options.limit,
@@ -392,6 +429,8 @@ struct ClipBoxCommand {
             collections: options.collections,
             accountName: options.accountName,
             cookiesFromBrowser: options.browser,
+                browserProfile: options.profile,
+                browserContainer: options.container,
             outputDirectory: outputURL,
             mediaTypes: options.mediaTypes,
             limit: options.limit,
@@ -657,12 +696,14 @@ struct ClipBoxCommand {
         print("  clipbox paths [--json]")
         print("  clipbox formats <url> [--browser <browser>] [--json]")
         print("  clipbox download <url> [--output <folder>] [--browser <browser>] [--force] [--json]")
-        print("  clipbox scan youtube <liked|watch-later> [--media-types videos] [--browser safari] [--limit <n>|--all] [--json]")
-        print("  clipbox sync youtube <liked|watch-later> [--media-types videos] [--browser safari] [--limit <n>|--all] [--dry-run] [--output <folder>] [--json]")
-        print("  clipbox scan x bookmarks [--media-types videos,photos,animated] [--browser safari] [--limit <n>|--all] [--json]")
-        print("  clipbox scan x likes --username <handle> [--media-types videos,photos,animated] [--browser safari] [--limit <n>|--all] [--json]")
-        print("  clipbox scan x all --username <handle> [--media-types videos,photos,animated] [--browser safari] [--limit <n>|--all] [--json]")
-        print("  clipbox sync x <bookmarks|likes|all> [--username <handle>] [--media-types videos,photos,animated] [--browser safari] [--limit <n>|--all] [--dry-run] [--output <folder>] [--json]")
+        print("  clipbox scan youtube <liked|watch-later> [--media-types videos] [--browser chrome] [--limit <n>|--all] [--json]")
+        print("  clipbox sync youtube <liked|watch-later> [--media-types videos] [--browser chrome] [--limit <n>|--all] [--dry-run] [--output <folder>] [--json]")
+        print("  clipbox session list | check --browser <browser> [--profile <directory>] [--container <name>] [--username <expected-handle>]")
+        print("  X scan/sync also accept --profile <directory> and --container <Firefox container>.")
+        print("  clipbox scan x bookmarks [--media-types videos,photos,animated] [--browser chrome] [--limit <n>|--all] [--json]")
+        print("  clipbox scan x likes --username <handle> [--media-types videos,photos,animated] [--browser chrome] [--limit <n>|--all] [--json]")
+        print("  clipbox scan x all --username <handle> [--media-types videos,photos,animated] [--browser chrome] [--limit <n>|--all] [--json]")
+        print("  clipbox sync x <bookmarks|likes|all> [--username <handle>] [--media-types videos,photos,animated] [--browser chrome] [--limit <n>|--all] [--dry-run] [--output <folder>] [--json]")
         print("  clipbox history [--limit <n>] [--json]")
         print("  clipbox history export <file.{jsonl|csv|xlsx}> [--format <format>] [--json]")
         print("  clipbox history import <file.{jsonl|csv}> [--format <format>] [--json]")
@@ -739,9 +780,14 @@ struct ClipBoxCommand {
         var remaining = Array(arguments.dropFirst(2))
         let all = removeFlag("--all", from: &remaining)
         let dryRun = allowDryRun && removeFlag("--dry-run", from: &remaining)
-        let rawBrowser = try removeOption("--browser", from: &remaining) ?? BrowserCookieSource.safari.rawValue
+        let rawBrowser = try removeOption("--browser", from: &remaining) ?? BrowserCookieSource.chrome.rawValue
         guard let browser = try parseBrowser(rawBrowser) else {
             throw CLIError.invalidArgument("A browser cookie source is required for authenticated collections.")
+        }
+        let profile = try removeOption("--profile", from: &remaining)
+        let container = try removeOption("--container", from: &remaining)
+        if collections.contains(where: { $0.site != "twitter" }), profile != nil || container != nil {
+            throw CLIError.invalidArgument("--profile and --container currently apply to X collections only.")
         }
         let rawLimit = try removeOption("--limit", from: &remaining)
         let accountName = try removeOption("--username", from: &remaining)
@@ -776,6 +822,8 @@ struct ClipBoxCommand {
         return CollectionCommandOptions(
             collections: collections,
             browser: browser,
+            profile: profile,
+            container: container,
             accountName: accountName,
             mediaTypes: mediaTypes,
             limit: limit,
@@ -873,6 +921,8 @@ private struct PathsPayload: Codable {
 private struct CollectionCommandOptions {
     let collections: [BuiltInCollection]
     let browser: BrowserCookieSource
+    let profile: String?
+    let container: String?
     let accountName: String?
     let mediaTypes: MediaTypeSelection
     let limit: Int?

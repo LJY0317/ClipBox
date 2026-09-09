@@ -2,9 +2,18 @@ import Foundation
 
 public struct ClipBoxPreferences: Codable, Equatable, Sendable {
     public var outputDirectoryPath: String?
+    public var xAccountHandle: String?
+    public var xBrowserSession: BrowserSession?
+    public var collectionScanAll: Bool?
+    public var collectionScanLimit: Int?
+    public var collectionSource: String?
+    public var enabledXCollections: [BuiltInCollection]?
+    public var collectionMediaTypes: MediaTypeSelection?
 
-    public init(outputDirectoryPath: String? = nil) {
+    public init(outputDirectoryPath: String? = nil, xAccountHandle: String? = nil, xBrowserSession: BrowserSession? = nil) {
         self.outputDirectoryPath = outputDirectoryPath
+        self.xAccountHandle = xAccountHandle
+        self.xBrowserSession = xBrowserSession
     }
 
     public var resolvedOutputDirectory: URL {
@@ -31,6 +40,7 @@ public enum ClipBoxPreferencesStore {
         try ClipBoxPaths.ensureApplicationSupportDirectories()
         let data = try JSONEncoder.clipBoxPretty.encode(preferences)
         try data.write(to: ClipBoxPaths.preferencesFileURL, options: .atomic)
+        try FileManager.default.setAttributes([.posixPermissions: 0o600], ofItemAtPath: ClipBoxPaths.preferencesFileURL.path)
     }
 }
 

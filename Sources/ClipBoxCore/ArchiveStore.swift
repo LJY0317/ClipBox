@@ -116,25 +116,28 @@ public actor ArchiveStore {
     public func collectionContains(
         site: String,
         collectionName: String,
-        mediaID: String
+        mediaID: String,
+        ownerID: String? = nil
     ) throws -> Bool {
         let statement = try prepare(
-            "SELECT 1 FROM collection_memberships WHERE site = ?1 AND collection_name = ?2 AND media_id = ?3 LIMIT 1"
+            "SELECT 1 FROM collection_memberships WHERE site = ?1 AND owner_namespace = ?2 AND collection_name = ?3 AND media_id = ?4 LIMIT 1"
         )
         defer { sqlite3_finalize(statement) }
         bind(site, at: 1, in: statement)
-        bind(collectionName, at: 2, in: statement)
-        bind(mediaID, at: 3, in: statement)
+        bind(Self.ownerNamespace(ownerID), at: 2, in: statement)
+        bind(collectionName, at: 3, in: statement)
+        bind(mediaID, at: 4, in: statement)
         return sqlite3_step(statement) == SQLITE_ROW
     }
 
-    public func collectionCount(site: String, collectionName: String) throws -> Int {
+    public func collectionCount(site: String, collectionName: String, ownerID: String? = nil) throws -> Int {
         let statement = try prepare(
-            "SELECT COUNT(*) FROM collection_memberships WHERE site = ?1 AND collection_name = ?2"
+            "SELECT COUNT(*) FROM collection_memberships WHERE site = ?1 AND owner_namespace = ?2 AND collection_name = ?3"
         )
         defer { sqlite3_finalize(statement) }
         bind(site, at: 1, in: statement)
-        bind(collectionName, at: 2, in: statement)
+        bind(Self.ownerNamespace(ownerID), at: 2, in: statement)
+        bind(collectionName, at: 3, in: statement)
         guard sqlite3_step(statement) == SQLITE_ROW else {
             throw currentError()
         }
@@ -144,9 +147,9 @@ public actor ArchiveStore {
     public func allCollectionMemberships() throws -> [CollectionMembershipRecord] {
         let statement = try prepare(
             """
-            SELECT site, collection_name, media_id, source_url, first_seen_at, last_seen_at
+            SELECT site, owner_namespace, collection_name, media_id, source_url, first_seen_at, last_seen_at
             FROM collection_memberships
-            ORDER BY site, collection_name, media_id
+            ORDER BY site, owner_namespace, collection_name, media_id
             """
         )
         defer { sqlite3_finalize(statement) }
@@ -163,11 +166,12 @@ public actor ArchiveStore {
             memberships.append(
                 CollectionMembershipRecord(
                     site: text(statement, 0) ?? "unknown",
-                    collectionName: text(statement, 1) ?? "unknown",
-                    mediaID: text(statement, 2) ?? "unknown",
-                    sourceURL: text(statement, 3),
-                    firstSeenAt: text(statement, 4) ?? "",
-                    lastSeenAt: text(statement, 5) ?? ""
+                    ownerID: Self.ownerID(from: text(statement, 1)),
+                    collectionName: text(statement, 2) ?? "unknown",
+                    mediaID: text(statement, 3) ?? "unknown",
+                    sourceURL: text(statement, 4),
+                    firstSeenAt: text(statement, 5) ?? "",
+                    lastSeenAt: text(statement, 6) ?? ""
                 )
             )
         }
@@ -175,14 +179,14 @@ public actor ArchiveStore {
     }
 
     @discardableResult
-    public func recordCollectionItems(_ items: [CollectionItem]) throws -> Int {
+    public func recordCollectionItems(_ items: [CollectionItem], ownerID: String? = nil) throws -> Int {
         guard !items.isEmpty else { return 0 }
         let statement = try prepare(
             """
             INSERT INTO collection_memberships (
-                site, collection_name, media_id, source_url, first_seen_at, last_seen_at
-            ) VALUES (?1, ?2, ?3, ?4, ?5, ?6)
-            ON CONFLICT(site, collection_name, media_id) DO UPDATE SET
+                site, owner_namespace, collection_name, media_id, source_url, first_seen_at, last_seen_at
+            ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)
+            ON CONFLICT(site, owner_namespace, collection_name, media_id) DO UPDATE SET
                 source_url = COALESCE(excluded.source_url, collection_memberships.source_url),
                 last_seen_at = excluded.last_seen_at
             """
@@ -196,11 +200,12 @@ public actor ArchiveStore {
                 sqlite3_reset(statement)
                 sqlite3_clear_bindings(statement)
                 bind(item.site, at: 1, in: statement)
-                bind(item.collectionName, at: 2, in: statement)
-                bind(item.mediaID, at: 3, in: statement)
-                bind(item.sourceURL, at: 4, in: statement)
-                bind(now, at: 5, in: statement)
+                bind(Self.ownerNamespace(ownerID), at: 2, in: statement)
+                bind(item.collectionName, at: 3, in: statement)
+                bind(item.mediaID, at: 4, in: statement)
+                bind(item.sourceURL, at: 5, in: statement)
                 bind(now, at: 6, in: statement)
+                bind(now, at: 7, in: statement)
                 guard sqlite3_step(statement) == SQLITE_DONE else {
                     throw currentError()
                 }
@@ -219,9 +224,9 @@ public actor ArchiveStore {
         let statement = try prepare(
             """
             INSERT INTO collection_memberships (
-                site, collection_name, media_id, source_url, first_seen_at, last_seen_at
-            ) VALUES (?1, ?2, ?3, ?4, ?5, ?6)
-            ON CONFLICT(site, collection_name, media_id) DO UPDATE SET
+                site, owner_namespace, collection_name, media_id, source_url, first_seen_at, last_seen_at
+            ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)
+            ON CONFLICT(site, owner_namespace, collection_name, media_id) DO UPDATE SET
                 source_url = COALESCE(collection_memberships.source_url, excluded.source_url),
                 first_seen_at = MIN(collection_memberships.first_seen_at, excluded.first_seen_at),
                 last_seen_at = MAX(collection_memberships.last_seen_at, excluded.last_seen_at)
@@ -235,11 +240,12 @@ public actor ArchiveStore {
                 sqlite3_reset(statement)
                 sqlite3_clear_bindings(statement)
                 bind(record.site, at: 1, in: statement)
-                bind(record.collectionName, at: 2, in: statement)
-                bind(record.mediaID, at: 3, in: statement)
-                bind(record.sourceURL, at: 4, in: statement)
-                bind(record.firstSeenAt, at: 5, in: statement)
-                bind(record.lastSeenAt, at: 6, in: statement)
+                bind(Self.ownerNamespace(record.ownerID), at: 2, in: statement)
+                bind(record.collectionName, at: 3, in: statement)
+                bind(record.mediaID, at: 4, in: statement)
+                bind(record.sourceURL, at: 5, in: statement)
+                bind(record.firstSeenAt, at: 6, in: statement)
+                bind(record.lastSeenAt, at: 7, in: statement)
                 guard sqlite3_step(statement) == SQLITE_DONE else {
                     throw currentError()
                 }
@@ -567,22 +573,86 @@ public actor ArchiveStore {
 
             CREATE TABLE IF NOT EXISTS collection_memberships (
                 site TEXT NOT NULL,
+                owner_namespace TEXT NOT NULL,
                 collection_name TEXT NOT NULL,
                 media_id TEXT NOT NULL,
                 source_url TEXT,
                 first_seen_at TEXT NOT NULL,
                 last_seen_at TEXT NOT NULL,
-                PRIMARY KEY(site, collection_name, media_id)
+                PRIMARY KEY(site, owner_namespace, collection_name, media_id)
             );
+            """
+        )
 
+        if try !columnExists("owner_namespace", in: "collection_memberships", database: database) {
+            try execute(database: database, sql: "BEGIN IMMEDIATE TRANSACTION;")
+            do {
+                try execute(database: database, sql: "ALTER TABLE collection_memberships RENAME TO collection_memberships_v2;")
+                try execute(
+                    database: database,
+                    sql: """
+                    CREATE TABLE collection_memberships (
+                        site TEXT NOT NULL,
+                        owner_namespace TEXT NOT NULL,
+                        collection_name TEXT NOT NULL,
+                        media_id TEXT NOT NULL,
+                        source_url TEXT,
+                        first_seen_at TEXT NOT NULL,
+                        last_seen_at TEXT NOT NULL,
+                        PRIMARY KEY(site, owner_namespace, collection_name, media_id)
+                    );
+                    INSERT INTO collection_memberships (
+                        site, owner_namespace, collection_name, media_id, source_url, first_seen_at, last_seen_at
+                    )
+                    SELECT site, 'unknown', collection_name, media_id, source_url, first_seen_at, last_seen_at
+                    FROM collection_memberships_v2;
+                    DROP TABLE collection_memberships_v2;
+                    """
+                )
+                try execute(database: database, sql: "COMMIT;")
+            } catch {
+                try? execute(database: database, sql: "ROLLBACK;")
+                throw error
+            }
+        }
+
+        try execute(
+            database: database,
+            sql: """
             CREATE INDEX IF NOT EXISTS collection_memberships_seen_idx
-            ON collection_memberships(site, collection_name, last_seen_at DESC);
+            ON collection_memberships(site, owner_namespace, collection_name, last_seen_at DESC);
 
             INSERT INTO schema_metadata(key, value)
-            VALUES ('schema_version', '2')
+            VALUES ('schema_version', '3')
             ON CONFLICT(key) DO UPDATE SET value = excluded.value;
             """
         )
+    }
+
+    private static func columnExists(_ column: String, in table: String, database: OpaquePointer) throws -> Bool {
+        var statement: OpaquePointer?
+        guard sqlite3_prepare_v2(database, "PRAGMA table_info(\(table))", -1, &statement, nil) == SQLITE_OK,
+              let statement else {
+            throw ArchiveStoreError.statementFailed(String(cString: sqlite3_errmsg(database)))
+        }
+        defer { sqlite3_finalize(statement) }
+        while sqlite3_step(statement) == SQLITE_ROW {
+            if let name = sqlite3_column_text(statement, 1), String(cString: name) == column {
+                return true
+            }
+        }
+        return false
+    }
+
+    private static func ownerNamespace(_ ownerID: String?) -> String {
+        guard let ownerID, !ownerID.isEmpty else { return "unknown" }
+        return "verified:\(ownerID)"
+    }
+
+    private static func ownerID(from namespace: String?) -> String? {
+        guard let namespace, namespace.hasPrefix("verified:") else { return nil }
+        let ownerID = String(namespace.dropFirst("verified:".count))
+        return ownerID.isEmpty ? nil : ownerID
     }
 
     private static func execute(database: OpaquePointer, sql: String) throws {

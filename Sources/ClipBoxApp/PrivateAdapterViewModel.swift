@@ -80,12 +80,12 @@ final class PrivateAdapterViewModel: ObservableObject {
     func createScaffold() {
         let id = newAdapterID.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !id.isEmpty else {
-            errorMessage = "Enter a private adapter ID first."
+            errorMessage = text("연결 ID를 먼저 입력해 주세요.", "Enter a private adapter ID first.")
             return
         }
 
         isWorking = true
-        statusMessage = "Creating private adapter scaffold…"
+        statusMessage = text("기본 연결 파일을 만드는 중…", "Creating private adapter scaffold…")
         errorMessage = nil
         Task {
             do {
@@ -93,7 +93,10 @@ final class PrivateAdapterViewModel: ObservableObject {
                 newAdapterID = ""
                 await refreshAdapters()
                 selectAdapter(id)
-                statusMessage = "Private adapter created outside the Git repository: \(directory.path)"
+                statusMessage = text(
+                    "연결 파일을 만들었습니다: \(directory.path)",
+                    "Private adapter created outside the Git repository: \(directory.path)"
+                )
             } catch {
                 errorMessage = error.localizedDescription
                 statusMessage = ""
@@ -105,12 +108,14 @@ final class PrivateAdapterViewModel: ObservableObject {
     func doctor() {
         guard let id = selectedAdapterID else { return }
         isWorking = true
-        statusMessage = "Checking private adapter…"
+        statusMessage = text("연결 상태를 확인하는 중…", "Checking private adapter…")
         errorMessage = nil
         Task {
             do {
                 let response = try await manager.doctor(id: id)
-                statusMessage = response.message ?? (response.ok ? "Adapter is ready." : "Adapter reported a problem.")
+                statusMessage = response.message ?? (response.ok
+                    ? text("연결을 사용할 수 있습니다.", "Adapter is ready.")
+                    : text("연결에서 문제를 보고했습니다.", "Adapter reported a problem."))
             } catch {
                 errorMessage = error.localizedDescription
                 statusMessage = ""
@@ -123,7 +128,7 @@ final class PrivateAdapterViewModel: ObservableObject {
         guard let syncService,
               let id = selectedAdapterID,
               !selectedCollectionID.isEmpty else {
-            errorMessage = initializationError?.localizedDescription ?? "Select an adapter and collection first."
+            errorMessage = initializationError?.localizedDescription ?? text("연결과 모음을 먼저 선택해 주세요.", "Select an adapter and collection first.")
             return
         }
 
@@ -131,7 +136,7 @@ final class PrivateAdapterViewModel: ObservableObject {
         let browser = browser
         let limit = effectiveLimit
         isWorking = true
-        statusMessage = "Reading private collection…"
+        statusMessage = text("개인 사이트의 모음을 확인하는 중…", "Reading private collection…")
         errorMessage = nil
         syncResult = nil
         Task {
@@ -143,7 +148,10 @@ final class PrivateAdapterViewModel: ObservableObject {
                     limit: limit
                 )
                 scanResult = result
-                statusMessage = "Found \(result.items.count) items; \(result.unarchivedCount) are not archived."
+                statusMessage = text(
+                    "항목 \(result.items.count)개를 확인했습니다. 새 항목은 \(result.unarchivedCount)개입니다.",
+                    "Found \(result.items.count) items; \(result.unarchivedCount) are not archived."
+                )
             } catch {
                 errorMessage = error.localizedDescription
                 statusMessage = ""
@@ -156,7 +164,7 @@ final class PrivateAdapterViewModel: ObservableObject {
         guard let syncService,
               let id = selectedAdapterID,
               !selectedCollectionID.isEmpty else {
-            errorMessage = initializationError?.localizedDescription ?? "Select an adapter and collection first."
+            errorMessage = initializationError?.localizedDescription ?? text("연결과 모음을 먼저 선택해 주세요.", "Select an adapter and collection first.")
             return
         }
 
@@ -165,7 +173,7 @@ final class PrivateAdapterViewModel: ObservableObject {
         let limit = effectiveLimit
         let outputDirectory = outputDirectory
         isWorking = true
-        statusMessage = "Synchronizing private collection…"
+        statusMessage = text("새 항목을 다운로드하는 중…", "Synchronizing private collection…")
         errorMessage = nil
         Task {
             do {
@@ -183,7 +191,10 @@ final class PrivateAdapterViewModel: ObservableObject {
                     browser: browser,
                     limit: limit
                 )
-                statusMessage = "Downloaded \(result.downloaded), skipped \(result.skippedAlreadyArchived), failed \(result.failed)."
+                statusMessage = text(
+                    "다운로드 \(result.downloaded)개 · 건너뜀 \(result.skippedAlreadyArchived)개 · 실패 \(result.failed)개",
+                    "Downloaded \(result.downloaded), skipped \(result.skippedAlreadyArchived), failed \(result.failed)."
+                )
             } catch {
                 errorMessage = error.localizedDescription
                 statusMessage = ""
@@ -215,5 +226,9 @@ final class PrivateAdapterViewModel: ObservableObject {
             return
         }
         selectedCollectionID = collections.first?.id ?? ""
+    }
+
+    private func text(_ korean: String, _ english: String) -> String {
+        AppLanguageStore.shared.text(korean, english)
     }
 }

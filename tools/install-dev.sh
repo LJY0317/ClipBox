@@ -60,6 +60,27 @@ swift build -c release --product clipbox
 release_bin_dir=$(swift build -c release --show-bin-path)
 source_cli="$release_bin_dir/clipbox"
 
+old_requirement=''
+if [ -d "$app_destination" ]; then
+    old_requirement=$(/usr/bin/codesign -dr - "$app_destination" 2>&1 | tail -1 || true)
+fi
+new_requirement=$(/usr/bin/codesign -dr - "$packaged_app" 2>&1 | tail -1 || true)
+if printf '%s' "$old_requirement" | /usr/bin/grep -q 'cdhash H' && \
+   printf '%s' "$new_requirement" | /usr/bin/grep -q 'cdhash H' && \
+   [ "$old_requirement" != "$new_requirement" ]; then
+    printf '%s\n' 'Note: this development build uses a new ad-hoc code identity. macOS privacy grants tied to the previous ClipBox CDHash may not carry over.'
+    printf '%s\n' 'Set CLIPBOX_CODESIGN_IDENTITY to a stable local code-signing identity when repeated TCC-protected browser access is required.'
+elif printf '%s' "$old_requirement" | /usr/bin/grep -q 'cdhash H' && \
+     ! printf '%s' "$new_requirement" | /usr/bin/grep -q 'cdhash H'; then
+    printf '%s\n' 'ClipBox is moving from ad-hoc signing to a stable certificate-based identity.'
+    printf '%s\n' 'A one-time macOS privacy re-approval may be required for this newly identified app.'
+elif [ -n "$old_requirement" ] && [ "$old_requirement" != "$new_requirement" ] && \
+     ! printf '%s' "$old_requirement" | /usr/bin/grep -q 'cdhash H' && \
+     ! printf '%s' "$new_requirement" | /usr/bin/grep -q 'cdhash H'; then
+    printf '%s\n' 'Warning: the certificate-based designated requirement changed between installed and new ClipBox builds.' >&2
+    printf '%s\n' 'Review the signing identity before relying on existing macOS privacy grants.' >&2
+fi
+
 mkdir -p "$app_install_dir" "$runtime_bin_dir" "$cli_bin_dir"
 assert_replaceable_app "$app_destination"
 rm -rf "$app_destination"

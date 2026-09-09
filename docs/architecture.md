@@ -39,9 +39,9 @@ Downloads currently request `bestvideo*+bestaudio/best`. `ffmpeg` is used by the
 
 Built-in collection adapters normalize a service-specific collection into `CollectionItem` records, then the shared collection service compares those records with the archive database before downloading anything. The first implementation supports YouTube Liked Videos and Watch Later through yt-dlp's `:ytfav` and `:ytwatchlater` feeds.
 
-Authentication stays local: the user selects a browser such as Safari or Chrome, and ClipBox passes the browser identifier to the extraction engine's browser-cookie support at runtime. ClipBox does not copy raw cookie values into its SQLite archive or configuration file.
+Authentication stays local: the user selects a browser/profile, and ClipBox delegates runtime cookie access to the extraction engine. The X adapter shares one gallery-dl process across selected collections and uses memory pipes. ClipBox does not copy raw cookie values into SQLite or preferences. See [X browser sessions](x-browser-sessions.md) for privacy boundaries and upstream limitations.
 
-Collection membership has its own SQLite table (`site + collection + media ID`) so ClipBox can distinguish items previously seen in a collection from items merely downloaded through another route. Successful-download state remains authoritative for deciding whether media needs to be downloaded again.
+Collection membership has its own SQLite table (`site + owner namespace + collection + media ID`) so ClipBox can distinguish items previously seen in a collection from items merely downloaded through another route without merging different verified X accounts. Legacy rows are migrated into an `unknown` owner namespace rather than being assigned to whichever account is currently signed in. Successful-download state remains globally keyed by `site + media ID`, so the same media file is still downloaded only once.
 
 ### X collection path
 
@@ -54,4 +54,4 @@ This distinction is required for posts containing multiple videos: several video
 
 For collection downloads, gallery-dl's selected highest-bitrate direct MP4 variant is transferred without re-encoding. Public live verification showed the selected 1280x720 / 2,176,000 bps MP4 variant corresponded to yt-dlp's 1280x720 / 2176 kbps top progressive format for the same X video. The direct MP4 contained both H.264 video and AAC audio in that sample.
 
-X Likes requires an account handle to construct the account's Likes URL; the current implementation accepts that handle per request rather than persisting it. X Bookmarks uses the authenticated account's bookmarks endpoint and does not need a handle.
+X Likes requires an account handle to construct the Likes URL. The GUI can remember it in local preferences alongside the verified browser/profile; the CLI accepts it as a request argument. X Bookmarks uses the authenticated account's bookmarks endpoint and does not need a handle.

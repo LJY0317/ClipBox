@@ -60,7 +60,7 @@ final class DownloadViewModel: ObservableObject {
 
     func analyze() {
         guard let service else {
-            errorMessage = initializationError?.localizedDescription ?? "ClipBox service is unavailable."
+            errorMessage = initializationError?.localizedDescription ?? AppLanguageStore.shared.text("ClipBox 다운로드 기능을 사용할 수 없습니다.", "ClipBox service is unavailable.")
             return
         }
 
@@ -68,7 +68,7 @@ final class DownloadViewModel: ObservableObject {
         let browserCookieSource = browserCookieSource
         isWorking = true
         errorMessage = nil
-        statusMessage = "Analyzing media…"
+        statusMessage = AppLanguageStore.shared.text("미디어 정보를 확인하는 중…", "Analyzing media…")
 
         Task {
             do {
@@ -76,7 +76,7 @@ final class DownloadViewModel: ObservableObject {
                     url: url,
                     cookiesFromBrowser: browserCookieSource
                 )
-                statusMessage = "Found \(media?.formats.count ?? 0) available formats."
+                statusMessage = AppLanguageStore.shared.text("사용 가능한 형식 \(media?.formats.count ?? 0)개를 확인했습니다.", "Found \(media?.formats.count ?? 0) available formats.")
             } catch {
                 errorMessage = error.localizedDescription
                 statusMessage = ""
@@ -87,7 +87,7 @@ final class DownloadViewModel: ObservableObject {
 
     func download() {
         guard let service else {
-            errorMessage = initializationError?.localizedDescription ?? "ClipBox service is unavailable."
+            errorMessage = initializationError?.localizedDescription ?? AppLanguageStore.shared.text("ClipBox 다운로드 기능을 사용할 수 없습니다.", "ClipBox service is unavailable.")
             return
         }
 
@@ -95,7 +95,7 @@ final class DownloadViewModel: ObservableObject {
         let browserCookieSource = browserCookieSource
         isWorking = true
         errorMessage = nil
-        statusMessage = "Downloading best available quality…"
+        statusMessage = AppLanguageStore.shared.text("가장 좋은 품질로 다운로드하는 중…", "Downloading best available quality…")
 
         Task {
             do {
@@ -107,11 +107,12 @@ final class DownloadViewModel: ObservableObject {
                 switch outcome {
                 case .downloaded(let downloadedMedia, let outputPath):
                     media = downloadedMedia
-                    statusMessage = "Downloaded to \(outputPath)"
+                    statusMessage = AppLanguageStore.shared.text("다운로드를 완료했습니다: \(outputPath)", "Downloaded to \(outputPath)")
                 case .skippedAlreadyArchived(let archivedMedia, let previousPath):
                     media = archivedMedia
-                    statusMessage = previousPath.map { "Already archived. Previous file: \($0)" }
-                        ?? "Already archived. Download skipped."
+                    statusMessage = previousPath.map {
+                        AppLanguageStore.shared.text("이미 저장한 항목입니다. 이전 파일: \($0)", "Already archived. Previous file: \($0)")
+                    } ?? AppLanguageStore.shared.text("이미 저장한 항목이라 다운로드하지 않았습니다.", "Already archived. Download skipped.")
                 }
                 await refreshHistory()
             } catch {
@@ -124,7 +125,7 @@ final class DownloadViewModel: ObservableObject {
 
     func refreshStatus() async {
         guard let service else {
-            errorMessage = initializationError?.localizedDescription ?? "ClipBox service is unavailable."
+            errorMessage = initializationError?.localizedDescription ?? AppLanguageStore.shared.text("ClipBox 다운로드 기능을 사용할 수 없습니다.", "ClipBox service is unavailable.")
             return
         }
 

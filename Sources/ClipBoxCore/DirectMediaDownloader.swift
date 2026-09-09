@@ -3,6 +3,7 @@ import Foundation
 public enum DirectMediaDownloaderError: Error, LocalizedError, Sendable {
     case unavailable
     case missingDirectURL
+    case httpStatus(Int)
     case downloadFailed(String)
 
     public var errorDescription: String? {
@@ -11,6 +12,8 @@ public enum DirectMediaDownloaderError: Error, LocalizedError, Sendable {
             "The macOS curl executable could not be found."
         case .missingDirectURL:
             "The collection item has no direct media URL."
+        case .httpStatus(let status):
+            "Direct media download returned HTTP \(status). The media URL may have expired or access may have changed."
         case .downloadFailed(let message):
             "Direct media download failed: \(message)"
         }
@@ -24,7 +27,7 @@ public actor DirectMediaDownloader {
         self.executableURL = executableURL
     }
 
-    public func download(item: CollectionItem, outputDirectory: URL) throws -> String {
+    public func download(item: CollectionItem, outputDirectory: URL) async throws -> String {
         guard let executableURL else {
             throw DirectMediaDownloaderError.unavailable
         }
@@ -37,9 +40,13 @@ public actor DirectMediaDownloader {
             withIntermediateDirectories: true
         )
 
-        let finalURL = outputDirectory.appendingPathComponent(filename(for: item))
+        var finalURL = outputDirectory.appendingPathComponent(filename(for: item))
         if FileManager.default.fileExists(atPath: finalURL.path) {
-            return finalURL.path
+            // An existing file without an archive decision is not proof of a completed download.
+            // Preserve it and avoid overwriting a user file or a previous interrupted run.
+            let base = finalURL.deletingPathExtension().lastPathComponent
+            let ext = finalURL.pathExtension
+            finalURL = outputDirectory.appendingPathComponent("\(base)_\(UUID().uuidString).\(ext)")
         }
 
         let partialURL = outputDirectory.appendingPathComponent(
@@ -48,25 +55,28 @@ public actor DirectMediaDownloader {
         )
         defer { try? FileManager.default.removeItem(at: partialURL) }
 
-        let result = try ProcessRunner.run(
+        let result = try await ProcessRunner.runAsync(
             executable: executableURL,
             arguments: [
+                "--disable",
                 "--fail",
                 "--location",
                 "--silent",
                 "--show-error",
                 "--retry", "2",
-                "--retry-delay", "1",
+                "--retry-delay", "2",
+                "--connect-timeout", "30",
+                "--max-time", "600",
+                "--write-out", "%{http_code}",
                 "--output", partialURL.path,
                 directMediaURL,
-            ]
+            ], timeout: 650
         )
         guard result.exitCode == 0 else {
-            let message = result.stderr
-                .split(whereSeparator: \.isNewline)
-                .suffix(8)
-                .joined(separator: "\n")
-            throw DirectMediaDownloaderError.downloadFailed(message)
+            if let status = Int(result.stdout.trimmingCharacters(in: .whitespacesAndNewlines)), status >= 400 {
+                throw DirectMediaDownloaderError.httpStatus(status)
+            }
+            throw DirectMediaDownloaderError.downloadFailed("The media server rejected the request or the connection failed. Retry sync to refresh media URLs; completed files are skipped.")
         }
 
         do {

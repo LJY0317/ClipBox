@@ -1,4 +1,5 @@
 import Foundation
+import SQLite3
 import XCTest
 @testable import ClipBoxCore
 
@@ -154,6 +155,61 @@ final class ClipBoxCoreTests: XCTestCase {
             collectionName: "liked"
         )
         XCTAssertEqual(membershipCount, 1)
+    }
+
+    func testLegacyCollectionMembershipMigrationKeepsUnknownOwnerAndSeparatesVerifiedOwners() async throws {
+        let temp = try makeTemporaryDirectory()
+        defer { try? FileManager.default.removeItem(at: temp) }
+        let databaseURL = temp.appendingPathComponent("legacy-v2.sqlite3")
+
+        var db: OpaquePointer?
+        XCTAssertEqual(sqlite3_open(databaseURL.path, &db), SQLITE_OK)
+        guard let db else { return XCTFail("Could not create legacy database") }
+        let legacySQL = """
+        CREATE TABLE collection_memberships (
+            site TEXT NOT NULL,
+            collection_name TEXT NOT NULL,
+            media_id TEXT NOT NULL,
+            source_url TEXT,
+            first_seen_at TEXT NOT NULL,
+            last_seen_at TEXT NOT NULL,
+            PRIMARY KEY(site, collection_name, media_id)
+        );
+        INSERT INTO collection_memberships
+        VALUES ('twitter', 'likes', 'same-media', 'https://x.com/example/status/1', '2026-01-01T00:00:00Z', '2026-01-01T00:00:00Z');
+        """
+        XCTAssertEqual(sqlite3_exec(db, legacySQL, nil, nil, nil), SQLITE_OK)
+        sqlite3_close(db)
+
+        let store = try ArchiveStore(databaseURL: databaseURL)
+        let legacyPresent = try await store.collectionContains(
+            site: "twitter", collectionName: "likes", mediaID: "same-media"
+        )
+        XCTAssertTrue(legacyPresent)
+        let incorrectlyAssigned = try await store.collectionContains(
+            site: "twitter", collectionName: "likes", mediaID: "same-media", ownerID: "111"
+        )
+        XCTAssertFalse(incorrectlyAssigned)
+
+        let item = CollectionItem(
+            site: "twitter",
+            collectionName: "likes",
+            mediaID: "same-media",
+            sourceURL: "https://x.com/example/status/1"
+        )
+        _ = try await store.recordCollectionItems([item], ownerID: "111")
+        _ = try await store.recordCollectionItems([item], ownerID: "222")
+
+        let unknownCount = try await store.collectionCount(site: "twitter", collectionName: "likes")
+        let ownerOneCount = try await store.collectionCount(site: "twitter", collectionName: "likes", ownerID: "111")
+        let ownerTwoCount = try await store.collectionCount(site: "twitter", collectionName: "likes", ownerID: "222")
+        XCTAssertEqual(unknownCount, 1)
+        XCTAssertEqual(ownerOneCount, 1)
+        XCTAssertEqual(ownerTwoCount, 1)
+        let memberships = try await store.allCollectionMemberships()
+        XCTAssertEqual(memberships.count, 3)
+        XCTAssertEqual(Set(memberships.compactMap(\.ownerID)), Set(["111", "222"]))
+        XCTAssertEqual(memberships.filter { $0.ownerID == nil }.count, 1)
     }
 
     func testArchiveImportDoesNotDowngradeExistingDownloadedRecord() async throws {
@@ -505,7 +561,7 @@ final class ClipBoxCoreTests: XCTestCase {
                 return XCTFail("Unexpected error: \(error)")
             }
             XCTAssertTrue(error.localizedDescription.contains("Safari"))
-            XCTAssertTrue(error.localizedDescription.contains("Full Disk Access"))
+            XCTAssertFalse(error.localizedDescription.contains("Full Disk Access"))
         }
     }
 
@@ -827,7 +883,8 @@ final class ClipBoxCoreTests: XCTestCase {
     private var fakeGalleryDlOverlappingCollectionsScript: String {
         """
         #!/bin/sh
-        case " $* " in
+        for input in "$@"; do
+        case "$input" in
           *"/likes"*)
             cat <<'JSON'
         [
@@ -836,7 +893,7 @@ final class ClipBoxCoreTests: XCTestCase {
         ]
         JSON
             ;;
-          *)
+          *"/bookmarks"*)
             cat <<'JSON'
         [
           [3,"https://video.twimg.com/ext_tw_video/9001/pu/vid/1280x720/shared.mp4",{"tweet_id":7001,"content":"Shared media","date":"2026-09-08 10:00:00","author":{"id":424242,"name":"ExampleUser"},"num":1,"type":"video","extension":"mp4","width":1280,"height":720,"bitrate":2176000}],
@@ -845,6 +902,7 @@ final class ClipBoxCoreTests: XCTestCase {
         JSON
             ;;
         esac
+        done
         """
     }
 

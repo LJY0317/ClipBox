@@ -185,7 +185,8 @@ public actor YtDlpClient {
                     title: Self.string(entry["title"]),
                     creator: Self.string(entry["uploader"])
                         ?? Self.string(entry["channel"])
-                        ?? Self.string(entry["creator"])
+                        ?? Self.string(entry["creator"]),
+                    thumbnailURL: Self.string(entry["thumbnail"])
                 )
             }
         } catch let error as YtDlpError {

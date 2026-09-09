@@ -26,6 +26,8 @@
     <string>14.0</string>
     <key>NSHighResolutionCapable</key>
     <true/>
+    <key>NSAppDataUsageDescription</key>
+    <string>Safari에 로그인된 계정을 사용해 저장한 X 항목을 가져오기 위해 Safari의 웹사이트 데이터를 읽습니다. Safari 로그인 데이터는 ClipBox에 복사해 저장하지 않습니다.</string>
     <key>NSPrincipalClass</key>
     <string>NSApplication</string>
 </dict>
