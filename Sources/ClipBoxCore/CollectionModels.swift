@@ -342,15 +342,54 @@ public struct CollectionSyncFailure: Codable, Equatable, Sendable, Identifiable 
     public let site: String
     public let mediaID: String
     public let title: String?
+    public let sourceURL: String?
+    public let collectionName: String?
+    public let mediaType: MediaAssetType?
     public let error: String
 
-    public init(site: String, mediaID: String, title: String?, error: String) {
+    public init(site: String, mediaID: String, title: String?, sourceURL: String? = nil,
+                collectionName: String? = nil, mediaType: MediaAssetType? = nil, error: String) {
         self.site = site
         self.mediaID = mediaID
         self.title = title
+        self.sourceURL = sourceURL
+        self.collectionName = collectionName
+        self.mediaType = mediaType
         self.error = error
     }
 }
+
+public enum CollectionSyncStage: String, Codable, Equatable, Sendable {
+    case preparing
+    case listing
+    case downloading
+    case completed
+    case stopped
+}
+
+public struct CollectionSyncProgress: Codable, Equatable, Sendable {
+    public let stage: CollectionSyncStage
+    public let completedItems: Int
+    public let totalItems: Int?
+    public let downloaded: Int
+    public let skippedAlreadyArchived: Int
+    public let failed: Int
+    public let message: String?
+
+    public init(stage: CollectionSyncStage, completedItems: Int = 0, totalItems: Int? = nil,
+                downloaded: Int = 0, skippedAlreadyArchived: Int = 0, failed: Int = 0,
+                message: String? = nil) {
+        self.stage = stage
+        self.completedItems = completedItems
+        self.totalItems = totalItems
+        self.downloaded = downloaded
+        self.skippedAlreadyArchived = skippedAlreadyArchived
+        self.failed = failed
+        self.message = message
+    }
+}
+
+public typealias CollectionSyncProgressHandler = @Sendable (CollectionSyncProgress) async -> Void
 
 public struct CollectionSyncResult: Codable, Equatable, Sendable {
     public let collection: BuiltInCollection
@@ -359,6 +398,9 @@ public struct CollectionSyncResult: Codable, Equatable, Sendable {
     public let downloaded: Int
     public let skippedAlreadyArchived: Int
     public let failed: Int
+    public let attempted: Int
+    public let remaining: Int
+    public let stoppedReason: String?
     public let dryRun: Bool
     public let failures: [CollectionSyncFailure]
 
@@ -369,6 +411,9 @@ public struct CollectionSyncResult: Codable, Equatable, Sendable {
         downloaded: Int,
         skippedAlreadyArchived: Int,
         failed: Int,
+        attempted: Int = 0,
+        remaining: Int = 0,
+        stoppedReason: String? = nil,
         dryRun: Bool,
         failures: [CollectionSyncFailure]
     ) {
@@ -378,6 +423,9 @@ public struct CollectionSyncResult: Codable, Equatable, Sendable {
         self.downloaded = downloaded
         self.skippedAlreadyArchived = skippedAlreadyArchived
         self.failed = failed
+        self.attempted = attempted
+        self.remaining = remaining
+        self.stoppedReason = stoppedReason
         self.dryRun = dryRun
         self.failures = failures
     }
@@ -392,6 +440,9 @@ public struct CollectionBatchSyncResult: Codable, Equatable, Sendable {
     public let downloaded: Int
     public let skippedAlreadyArchived: Int
     public let failed: Int
+    public let attempted: Int
+    public let remaining: Int
+    public let stoppedReason: String?
     public let dryRun: Bool
     public let failures: [CollectionSyncFailure]
 
@@ -404,6 +455,9 @@ public struct CollectionBatchSyncResult: Codable, Equatable, Sendable {
         downloaded: Int,
         skippedAlreadyArchived: Int,
         failed: Int,
+        attempted: Int = 0,
+        remaining: Int = 0,
+        stoppedReason: String? = nil,
         dryRun: Bool,
         failures: [CollectionSyncFailure]
     ) {
@@ -415,6 +469,9 @@ public struct CollectionBatchSyncResult: Codable, Equatable, Sendable {
         self.downloaded = downloaded
         self.skippedAlreadyArchived = skippedAlreadyArchived
         self.failed = failed
+        self.attempted = attempted
+        self.remaining = remaining
+        self.stoppedReason = stoppedReason
         self.dryRun = dryRun
         self.failures = failures
     }

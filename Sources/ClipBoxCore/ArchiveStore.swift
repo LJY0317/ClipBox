@@ -492,8 +492,14 @@ public actor ArchiveStore {
             audio_codec = excluded.audio_codec,
             format_id = COALESCE(excluded.format_id, media.format_id),
             output_path = COALESCE(excluded.output_path, media.output_path),
-            status = excluded.status,
-            last_error = excluded.last_error
+            status = CASE
+                WHEN media.status = 'downloaded' OR excluded.status = 'downloaded' THEN 'downloaded'
+                ELSE excluded.status
+            END,
+            last_error = CASE
+                WHEN media.status = 'downloaded' OR excluded.status = 'downloaded' THEN NULL
+                ELSE excluded.last_error
+            END
         """
 
         let statement = try prepare(sql)

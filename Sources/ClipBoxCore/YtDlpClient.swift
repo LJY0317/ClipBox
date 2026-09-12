@@ -23,6 +23,9 @@ public enum YtDlpError: Error, LocalizedError, Sendable {
 
 public actor YtDlpClient {
     private let executableURL: URL?
+    private static let inspectionTimeout: TimeInterval = 2 * 60
+    private static let collectionScanTimeout: TimeInterval = 10 * 60
+    private static let downloadTimeout: TimeInterval = 24 * 60 * 60
 
     public init(executableURL: URL? = ExecutableLocator.locate("yt-dlp")) {
         self.executableURL = executableURL
@@ -46,7 +49,7 @@ public actor YtDlpClient {
     public func inspect(
         url: String,
         cookiesFromBrowser: BrowserCookieSource? = nil
-    ) throws -> MediaMetadata {
+    ) async throws -> MediaMetadata {
         guard let executableURL else {
             throw YtDlpError.unavailable
         }
@@ -59,9 +62,10 @@ public actor YtDlpClient {
         arguments.append(contentsOf: authenticationArguments(cookiesFromBrowser))
         arguments.append(url)
 
-        let result = try ProcessRunner.run(
+        let result = try await ProcessRunner.runAsync(
             executable: executableURL,
-            arguments: arguments
+            arguments: arguments,
+            timeout: Self.inspectionTimeout
         )
         guard result.exitCode == 0 else {
             throw YtDlpError.inspectionFailed(cleanError(result.stderr))
@@ -88,7 +92,7 @@ public actor YtDlpClient {
         url: String,
         outputDirectory: URL,
         cookiesFromBrowser: BrowserCookieSource? = nil
-    ) throws -> String {
+    ) async throws -> String {
         guard let executableURL else {
             throw YtDlpError.unavailable
         }
@@ -103,15 +107,18 @@ public actor YtDlpClient {
             "--no-warnings",
             "--format", "bestvideo*+bestaudio/best",
             "--merge-output-format", "mp4",
+            "--continue",
+            "--part",
             "--output", outputTemplate,
             "--print", "after_move:filepath",
         ]
         arguments.append(contentsOf: authenticationArguments(cookiesFromBrowser))
         arguments.append(url)
 
-        let result = try ProcessRunner.run(
+        let result = try await ProcessRunner.runAsync(
             executable: executableURL,
-            arguments: arguments
+            arguments: arguments,
+            timeout: Self.downloadTimeout
         )
         guard result.exitCode == 0 else {
             throw YtDlpError.downloadFailed(cleanError(result.stderr))
@@ -131,7 +138,7 @@ public actor YtDlpClient {
         _ collection: BuiltInCollection,
         cookiesFromBrowser: BrowserCookieSource,
         limit: Int? = nil
-    ) throws -> [CollectionItem] {
+    ) async throws -> [CollectionItem] {
         guard let executableURL else {
             throw YtDlpError.unavailable
         }
@@ -151,7 +158,11 @@ public actor YtDlpClient {
         }
         arguments.append(sourceToken)
 
-        let result = try ProcessRunner.run(executable: executableURL, arguments: arguments)
+        let result = try await ProcessRunner.runAsync(
+            executable: executableURL,
+            arguments: arguments,
+            timeout: Self.collectionScanTimeout
+        )
         guard result.exitCode == 0 else {
             throw YtDlpError.inspectionFailed(cleanError(result.stderr))
         }

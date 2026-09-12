@@ -74,6 +74,7 @@ final class CollectionViewModel: ObservableObject {
         comparison?.current.entries.filter { $0.collection == previewCollection } ?? []
     }
     @Published var syncResult: CollectionBatchSyncResult?
+    @Published var syncProgress: CollectionSyncProgress?
     @Published var isWorking = false
     @Published var statusMessage = ""
     @Published var errorMessage: String?
@@ -388,6 +389,7 @@ final class CollectionViewModel: ObservableObject {
         }
 
         isWorking = true
+        syncProgress = CollectionSyncProgress(stage: .preparing)
         errorMessage = nil
         statusMessage = text("\(sourceName(selectedSource))에서 새 항목을 다운로드하는 중…", "Synchronizing \(selectedSource.displayName)…")
             + (scanAll ? text(" X의 요청 제한이 풀릴 때까지 잠시 기다릴 수 있으며 언제든 중지할 수 있습니다.", " Full scans may pause until X rate limits reset; you can stop at any time.") : "")
@@ -399,6 +401,9 @@ final class CollectionViewModel: ObservableObject {
         let limit = effectiveLimit
         let outputDirectory = outputDirectory
         let session = selectedSession
+        let updateProgress: CollectionSyncProgressHandler = { [weak self] value in
+            await MainActor.run { self?.syncProgress = value }
+        }
         workTask = Task {
             do {
                 let result: CollectionBatchSyncResult
@@ -410,7 +415,8 @@ final class CollectionViewModel: ObservableObject {
                     browserProfile: session.profile,
                     browserContainer: session.container,
                     outputDirectory: outputDirectory,
-                    mediaTypes: mediaTypes
+                    mediaTypes: mediaTypes,
+                    progress: updateProgress
                    ) {
                     result = loaded
                 } else {
@@ -422,7 +428,8 @@ final class CollectionViewModel: ObservableObject {
                         browserContainer: isXMode ? session.container : nil,
                         outputDirectory: outputDirectory,
                         mediaTypes: mediaTypes,
-                        limit: limit
+                        limit: limit,
+                        progress: updateProgress
                     )
                 }
                 syncResult = result
@@ -431,15 +438,62 @@ final class CollectionViewModel: ObservableObject {
                 pagedPreviewHasMoreCollections = []
                 saveConnection(session)
                 let executionNote = await service.lastExecutionNote
-                statusMessage = text(
+                let summary = text(
                     "다운로드 \(result.downloaded)개 · 건너뜀 \(result.skippedAlreadyArchived)개 · 실패 \(result.failed)개 · 중복 \(result.duplicatesCollapsed)개 정리",
                     "Downloaded \(result.downloaded), skipped \(result.skippedAlreadyArchived), failed \(result.failed). \(result.duplicatesCollapsed) overlapping collection entries were merged."
-                ) + englishExecutionNote(executionNote)
+                )
+                if let reason = result.stoppedReason {
+                    statusMessage = summary + text(" · 중단됨: \(reason)", " · Stopped: \(reason)") + englishExecutionNote(executionNote)
+                } else {
+                    statusMessage = summary + englishExecutionNote(executionNote)
+                }
             } catch is CancellationError {
                 statusMessage = text("중지했습니다. 이미 완료된 다운로드 기록은 유지됩니다.", "Stopped. Completed downloads remain archived.")
             } catch {
                 errorMessage = error.localizedDescription
                 statusMessage = ""
+            }
+            isWorking = false
+        }
+    }
+
+    var canRetryFailures: Bool {
+        !isWorking && !(syncResult?.failures.isEmpty ?? true)
+    }
+
+    func retryFailures() {
+        guard let service, let previous = syncResult, !previous.failures.isEmpty, !isWorking else { return }
+        isWorking = true
+        errorMessage = nil
+        syncProgress = CollectionSyncProgress(stage: .preparing, totalItems: previous.failures.count)
+        statusMessage = text("실패한 항목만 다시 시도하는 중…", "Retrying failed items only…")
+        let failures = previous.failures
+        let session = selectedSession
+        let outputDirectory = outputDirectory
+        let mediaTypes = mediaTypes
+        let browser = browser
+        let accountName = normalizedXAccountName
+        let updateProgress: CollectionSyncProgressHandler = { [weak self] value in
+            await MainActor.run { self?.syncProgress = value }
+        }
+        workTask = Task {
+            do {
+                let result = try await service.retryFailures(failures, accountName: accountName,
+                    cookiesFromBrowser: browser, browserProfile: session.profile,
+                    browserContainer: session.container, outputDirectory: outputDirectory,
+                    mediaTypes: mediaTypes, progress: updateProgress)
+                syncResult = result
+                statusMessage = text(
+                    "재시도 완료: 다운로드 \(result.downloaded)개 · 건너뜀 \(result.skippedAlreadyArchived)개 · 실패 \(result.failed)개",
+                    "Retry complete: downloaded \(result.downloaded), skipped \(result.skippedAlreadyArchived), failed \(result.failed)."
+                )
+                if let reason = result.stoppedReason {
+                    statusMessage += text(" · 중단됨: \(reason)", " · Stopped: \(reason)")
+                }
+            } catch is CancellationError {
+                statusMessage = text("재시도를 중지했습니다.", "Retry stopped.")
+            } catch {
+                errorMessage = error.localizedDescription
             }
             isWorking = false
         }
@@ -637,12 +691,16 @@ final class CollectionViewModel: ObservableObject {
     }
 
     private func clearResults() {
+        if let service {
+            Task { await service.invalidateLoadedXPreview() }
+        }
         scanResult = nil
         comparison = nil
         isPagedXPreview = false
         pagedPreviewHasMoreCollections = []
         snapshotWarning = nil
         syncResult = nil
+        syncProgress = nil
         statusMessage = ""
         errorMessage = nil
     }

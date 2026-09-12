@@ -114,6 +114,11 @@ public actor ClipBoxService {
                 outputPath: outputPath
             )
             return .downloaded(media: media, outputPath: outputPath)
+        } catch is CancellationError {
+            // yt-dlp keeps its .part file so a later run can resume. Cancellation is
+            // not a failed download and must never overwrite an already-completed record.
+            try? await archive.record(media: media, status: .discovered)
+            throw CancellationError()
         } catch {
             try? await archive.record(
                 media: media,

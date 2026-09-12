@@ -43,6 +43,10 @@ struct CollectionExecutionPlanCache {
         guard let plan, plan.context == context, now.timeIntervalSince(plan.createdAt) <= lifetime else { return nil }
         return plan.data
     }
+
+    mutating func clear() {
+        plan = nil
+    }
 }
 
 public struct CollectionPagedPreview: Sendable {
@@ -55,6 +59,7 @@ public struct CollectionPagedPreview: Sendable {
 }
 
 private struct XPreviewPagingState {
+    let createdAt: Date
     let collections: [BuiltInCollection]
     let accountName: String?
     let session: BrowserSession
@@ -73,6 +78,8 @@ public actor CollectionSyncService {
     private let downloadService: ClipBoxService
     private var planCache = CollectionExecutionPlanCache()
     private var xPreviewPaging: XPreviewPagingState?
+    private let xPreviewLifetime: TimeInterval
+    private let xWorkDirectory: URL?
     public private(set) var lastExecutionNote: String = ""
 
     static func shouldRefreshDirectMedia(status: Int, refreshAttempts: Int) -> Bool {
@@ -83,7 +90,9 @@ public actor CollectionSyncService {
         archive: ArchiveStore? = nil,
         ytDlp: YtDlpClient? = nil,
         galleryDl: GalleryDlClient? = nil,
-        directDownloader: DirectMediaDownloader? = nil
+        directDownloader: DirectMediaDownloader? = nil,
+        xPreviewLifetime: TimeInterval = 10 * 60,
+        xWorkDirectory: URL? = nil
     ) throws {
         let resolvedArchive = try archive ?? ArchiveStore()
         let resolvedYtDlp = ytDlp ?? YtDlpClient()
@@ -91,6 +100,8 @@ public actor CollectionSyncService {
         self.ytDlp = resolvedYtDlp
         self.galleryDl = galleryDl ?? GalleryDlClient()
         self.directDownloader = directDownloader ?? DirectMediaDownloader()
+        self.xPreviewLifetime = xPreviewLifetime
+        self.xWorkDirectory = xWorkDirectory
         self.downloadService = try ClipBoxService(
             archive: resolvedArchive,
             ytDlp: resolvedYtDlp
@@ -190,16 +201,19 @@ public actor CollectionSyncService {
         outputDirectory: URL? = nil,
         mediaTypes: MediaTypeSelection = .defaultSelection,
         limit: Int? = 100,
-        dryRun: Bool = false
+        dryRun: Bool = false,
+        progress: CollectionSyncProgressHandler? = nil
     ) async throws -> CollectionSyncResult {
         if collection.site == "twitter" {
             let batch = try await sync(collections: [collection], accountName: accountName,
                 cookiesFromBrowser: cookiesFromBrowser, browserProfile: browserProfile,
                 browserContainer: browserContainer, outputDirectory: outputDirectory,
-                mediaTypes: mediaTypes, limit: limit, dryRun: dryRun)
+                mediaTypes: mediaTypes, limit: limit, dryRun: dryRun, progress: progress)
             return CollectionSyncResult(collection: collection, scanned: batch.uniqueMedia,
                 unarchived: batch.unarchived, downloaded: batch.downloaded,
                 skippedAlreadyArchived: batch.skippedAlreadyArchived, failed: batch.failed,
+                attempted: batch.attempted, remaining: batch.remaining,
+                stoppedReason: batch.stoppedReason,
                 dryRun: batch.dryRun, failures: batch.failures)
         }
         let scanResult = try await scan(
@@ -293,12 +307,12 @@ public actor CollectionSyncService {
     ) async throws -> CollectionBatchScanResult {
         let session = BrowserSession(browser: cookiesFromBrowser, profile: browserProfile, container: browserContainer)
         let xSelected = collections.contains { $0.site == "twitter" }
-        let lease = try xSelected ? XWorkCoordinator.acquire(scope: XWorkScope(session: session)) : nil
+        let lease = try xSelected ? acquireXWork(scope: XWorkScope(session: session)) : nil
         _ = lease
         var ownerID: String?
         do {
             ownerID = try await verifiedOwnerIDIfNeeded(collections: collections, accountName: accountName, session: session)
-            let ownerLease = try ownerID.map { try XWorkCoordinator.acquire(scope: XWorkScope(ownerID: $0, session: session)) }
+            let ownerLease = try ownerID.map { try acquireXWork(scope: XWorkScope(ownerID: $0, session: session)) }
             _ = ownerLease
             let data = try await scanBatchData(collections: collections, accountName: accountName,
                 cookiesFromBrowser: cookiesFromBrowser, browserProfile: browserProfile,
@@ -325,11 +339,12 @@ public actor CollectionSyncService {
         outputDirectory: URL? = nil,
         mediaTypes: MediaTypeSelection = .defaultSelection,
         limit: Int? = 100,
-        dryRun: Bool = false
+        dryRun: Bool = false,
+        progress: CollectionSyncProgressHandler? = nil
     ) async throws -> CollectionBatchSyncResult {
         let session = BrowserSession(browser: cookiesFromBrowser, profile: browserProfile, container: browserContainer)
         let xSelected = collections.contains { $0.site == "twitter" }
-        let lease = try xSelected ? XWorkCoordinator.acquire(scope: XWorkScope(session: session)) : nil
+        let lease = try xSelected ? acquireXWork(scope: XWorkScope(session: session)) : nil
         _ = lease
         let ownerID: String?
         do {
@@ -338,11 +353,20 @@ public actor CollectionSyncService {
             try persistCooldownIfNeeded(error, session: session, ownerID: nil)
             throw error
         }
-        let ownerLease = try ownerID.map { try XWorkCoordinator.acquire(scope: XWorkScope(ownerID: $0, session: session)) }
+        let ownerLease = try ownerID.map { try acquireXWork(scope: XWorkScope(ownerID: $0, session: session)) }
         _ = ownerLease
         if xSelected, !dryRun, ownerID == nil {
             throw GalleryDlError.scanFailed(
                 "X account identity could not be server-verified, so ClipBox made no membership or download changes. Test the selected browser session and try again."
+            )
+        }
+        if xSelected, limit == nil, !dryRun {
+            return try await syncAllXPages(
+                collections: collections, accountName: accountName,
+                cookiesFromBrowser: cookiesFromBrowser, browserProfile: browserProfile,
+                browserContainer: browserContainer, outputDirectory: outputDirectory,
+                mediaTypes: mediaTypes, ownerID: ownerID, session: session,
+                progress: progress
             )
         }
         let context = executionContext(collections: collections, accountName: accountName, session: session,
@@ -365,9 +389,17 @@ public actor CollectionSyncService {
                 lastExecutionNote = "Collection list was queried because there was no matching, unexpired Preview plan."
             }
         }
-        return try await syncBatchData(scanData, ownerID: xSelected ? ownerID : nil,
+        let result = try await syncBatchData(scanData, ownerID: xSelected ? ownerID : nil,
             session: session, cookiesFromBrowser: cookiesFromBrowser,
-            outputDirectory: outputDirectory, mediaTypes: mediaTypes, dryRun: dryRun)
+            outputDirectory: outputDirectory, mediaTypes: mediaTypes, dryRun: dryRun,
+            progress: progress)
+        if xSelected, !dryRun {
+            // A successful/partial Sync consumes the list plan. A later Sync must query
+            // X again so newly saved items are visible; only an explicit Preview→Sync
+            // handoff reuses the already-loaded list.
+            planCache.clear()
+        }
+        return result
     }
 
     public func beginPagedXPreview(
@@ -391,12 +423,12 @@ public actor CollectionSyncService {
         }
 
         let session = BrowserSession(browser: cookiesFromBrowser, profile: browserProfile, container: browserContainer)
-        let sessionLease = try XWorkCoordinator.acquire(scope: XWorkScope(session: session))
+        let sessionLease = try acquireXWork(scope: XWorkScope(session: session))
         _ = sessionLease
         var ownerID: String?
         do {
             ownerID = try await verifiedOwnerIDIfNeeded(collections: selected, accountName: accountName, session: session)
-            let ownerLease = try ownerID.map { try XWorkCoordinator.acquire(scope: XWorkScope(ownerID: $0, session: session)) }
+            let ownerLease = try ownerID.map { try acquireXWork(scope: XWorkScope(ownerID: $0, session: session)) }
             _ = ownerLease
             let page = try await galleryDl.scanCollectionPage(
                 selected,
@@ -415,6 +447,7 @@ public actor CollectionSyncService {
                 diagnostics: page.diagnostics
             )
             xPreviewPaging = XPreviewPagingState(
+                createdAt: Date(),
                 collections: selected,
                 accountName: BuiltInCollection.normalizedAccountName(accountName),
                 session: session,
@@ -447,11 +480,13 @@ public actor CollectionSyncService {
         let session = BrowserSession(browser: cookiesFromBrowser, profile: browserProfile, container: browserContainer)
         let normalizedAccount = BuiltInCollection.normalizedAccountName(accountName)
         guard var state = xPreviewPaging,
+              Date().timeIntervalSince(state.createdAt) <= xPreviewLifetime,
               state.collections.contains(collection),
               state.accountName == normalizedAccount,
               state.session == session,
               state.mediaTypes == mediaTypes else {
-            throw YtDlpError.inspectionFailed("The paged Preview context changed. Start a new Preview before loading another page.")
+            xPreviewPaging = nil
+            throw YtDlpError.inspectionFailed("The paged Preview expired or its settings changed. Start a new Preview before loading another page.")
         }
         guard let cursor = state.continuations[collection] else {
             let data = try await pagedBatchData(collections: state.collections, rawItems: state.rawItems,
@@ -459,9 +494,9 @@ public actor CollectionSyncService {
             return CollectionPagedPreview(result: data.result, hasMoreCollections: Set(state.continuations.keys))
         }
 
-        let sessionLease = try XWorkCoordinator.acquire(scope: XWorkScope(session: session))
+        let sessionLease = try acquireXWork(scope: XWorkScope(session: session))
         _ = sessionLease
-        let ownerLease = try state.ownerID.map { try XWorkCoordinator.acquire(scope: XWorkScope(ownerID: $0, session: session)) }
+        let ownerLease = try state.ownerID.map { try acquireXWork(scope: XWorkScope(ownerID: $0, session: session)) }
         _ = ownerLease
         do {
             let page = try await galleryDl.scanCollectionPage(
@@ -505,30 +540,42 @@ public actor CollectionSyncService {
         browserProfile: String? = nil,
         browserContainer: String? = nil,
         outputDirectory: URL? = nil,
-        mediaTypes: MediaTypeSelection = .defaultSelection
+        mediaTypes: MediaTypeSelection = .defaultSelection,
+        progress: CollectionSyncProgressHandler? = nil
     ) async throws -> CollectionBatchSyncResult? {
         let session = BrowserSession(browser: cookiesFromBrowser, profile: browserProfile, container: browserContainer)
         let normalizedAccount = BuiltInCollection.normalizedAccountName(accountName)
         guard let state = xPreviewPaging,
+              Date().timeIntervalSince(state.createdAt) <= xPreviewLifetime,
               state.collections == collections,
               state.accountName == normalizedAccount,
               state.session == session,
-              state.mediaTypes == mediaTypes else { return nil }
+              state.mediaTypes == mediaTypes else {
+            xPreviewPaging = nil
+            return nil
+        }
 
-        let sessionLease = try XWorkCoordinator.acquire(scope: XWorkScope(session: session))
+        let sessionLease = try acquireXWork(scope: XWorkScope(session: session))
         _ = sessionLease
         let verifiedOwner = try await verifiedOwnerIDIfNeeded(collections: collections, accountName: accountName, session: session)
         guard verifiedOwner == state.ownerID, verifiedOwner != nil else {
             throw GalleryDlError.scanFailed("The X account changed since Preview. Start a new Preview before syncing.")
         }
-        let ownerLease = try verifiedOwner.map { try XWorkCoordinator.acquire(scope: XWorkScope(ownerID: $0, session: session)) }
+        let ownerLease = try verifiedOwner.map { try acquireXWork(scope: XWorkScope(ownerID: $0, session: session)) }
         _ = ownerLease
         let freshData = try await pagedBatchData(collections: state.collections, rawItems: state.rawItems,
             ownerID: verifiedOwner, diagnostics: state.diagnostics)
+        // A loaded Preview is a one-shot execution plan. Consuming it prevents a later
+        // Sync with the same settings from silently reusing an old X list after new saves arrive.
+        xPreviewPaging = nil
         lastExecutionNote = "Reused the X pages already loaded in Preview; no Likes/Bookmarks list was queried again."
         return try await syncBatchData(freshData, ownerID: verifiedOwner, session: session,
             cookiesFromBrowser: cookiesFromBrowser, outputDirectory: outputDirectory,
-            mediaTypes: mediaTypes, dryRun: false)
+            mediaTypes: mediaTypes, dryRun: false, progress: progress)
+    }
+
+    public func invalidateLoadedXPreview() {
+        xPreviewPaging = nil
     }
 
     private func pagedBatchData(
@@ -609,10 +656,15 @@ public actor CollectionSyncService {
         cookiesFromBrowser: BrowserCookieSource,
         outputDirectory: URL?,
         mediaTypes: MediaTypeSelection,
-        dryRun: Bool
+        dryRun: Bool,
+        progress: CollectionSyncProgressHandler? = nil
     ) async throws -> CollectionBatchSyncResult {
         let scanResult = scanData.result
-        let candidates = scanResult.items.filter { !$0.alreadyDownloaded }
+        var candidates: [CollectionBatchScanItem] = []
+        for item in scanResult.items {
+            if try await currentlyDownloaded(item.item) { continue }
+            candidates.append(item)
+        }
         let initiallyArchived = scanResult.items.count - candidates.count
         if dryRun {
             return CollectionBatchSyncResult(collections: scanResult.collections,
@@ -627,9 +679,26 @@ public actor CollectionSyncService {
         _ = try await archive.recordCollectionItems(scanData.membershipItems, ownerID: ownerID)
         var downloaded = 0
         var skipped = initiallyArchived
+        var attempted = 0
+        var remaining = 0
+        var stoppedReason: String?
         var failures: [CollectionSyncFailure] = []
-        for candidate in candidates {
-            try Task.checkCancellation()
+        await progress?(CollectionSyncProgress(stage: .downloading, totalItems: candidates.count,
+            skippedAlreadyArchived: skipped))
+        for (index, candidate) in candidates.enumerated() {
+            if Task.isCancelled {
+                remaining = candidates.count - index
+                stoppedReason = "Cancelled"
+                break
+            }
+            if try await currentlyDownloaded(candidate.item) {
+                skipped += 1
+                await progress?(CollectionSyncProgress(stage: .downloading,
+                    completedItems: index + 1, totalItems: candidates.count,
+                    downloaded: downloaded, skippedAlreadyArchived: skipped, failed: failures.count))
+                continue
+            }
+            attempted += 1
             do {
                 if candidate.item.directMediaURL != nil {
                     try await downloadDirectCollectionItem(candidate.item, outputDirectory: outputDirectory,
@@ -644,20 +713,276 @@ public actor CollectionSyncService {
                     }
                 }
             } catch is CancellationError {
-                throw CancellationError()
+                remaining = candidates.count - index
+                stoppedReason = "Cancelled"
+                break
+            } catch let error as GalleryDlError where Self.shouldStopXRequests(after: error) {
+                try persistCooldownIfNeeded(error, session: session, ownerID: ownerID)
+                failures.append(syncFailure(for: candidate.item, error: error))
+                remaining = candidates.count - index - 1
+                stoppedReason = error.localizedDescription
+                break
             } catch {
-                failures.append(CollectionSyncFailure(site: candidate.item.site,
-                    mediaID: candidate.item.mediaID, title: candidate.item.title,
-                    error: error.localizedDescription))
+                failures.append(syncFailure(for: candidate.item, error: error))
             }
+            await progress?(CollectionSyncProgress(stage: .downloading,
+                completedItems: index + 1, totalItems: candidates.count,
+                downloaded: downloaded, skippedAlreadyArchived: skipped, failed: failures.count))
         }
-        return CollectionBatchSyncResult(collections: scanResult.collections,
+        let result = CollectionBatchSyncResult(collections: scanResult.collections,
             scannedOccurrences: scanResult.scannedOccurrences,
             uniqueMedia: scanResult.uniqueMediaCount,
             duplicatesCollapsed: scanResult.duplicateOccurrencesCollapsed,
             unarchived: candidates.count, downloaded: downloaded,
             skippedAlreadyArchived: skipped, failed: failures.count,
+            attempted: attempted, remaining: remaining, stoppedReason: stoppedReason,
             dryRun: false, failures: failures)
+        await progress?(CollectionSyncProgress(stage: stoppedReason == nil ? .completed : .stopped,
+            completedItems: candidates.count - remaining, totalItems: candidates.count,
+            downloaded: downloaded, skippedAlreadyArchived: skipped, failed: failures.count,
+            message: stoppedReason))
+        return result
+    }
+
+    private func currentlyDownloaded(_ item: CollectionItem) async throws -> Bool {
+        if try await archive.downloaded(identity: item.archiveIdentity) { return true }
+        guard item.directMediaURL == nil, let sourceID = item.sourceID, !sourceID.isEmpty else { return false }
+        return try await archive.downloaded(site: item.site, sourceID: sourceID)
+    }
+
+    private func syncFailure(for item: CollectionItem, error: Error) -> CollectionSyncFailure {
+        CollectionSyncFailure(site: item.site, mediaID: item.mediaID, title: item.title,
+            sourceURL: item.sourceURL, collectionName: item.collectionName, mediaType: item.mediaType,
+            error: error.localizedDescription)
+    }
+
+    private static func shouldStopXRequests(after error: GalleryDlError) -> Bool {
+        switch error {
+        case .rateLimited, .securityChallenge: true
+        default: false
+        }
+    }
+
+    private func syncAllXPages(
+        collections: [BuiltInCollection],
+        accountName: String?,
+        cookiesFromBrowser: BrowserCookieSource,
+        browserProfile: String?,
+        browserContainer: String?,
+        outputDirectory: URL?,
+        mediaTypes: MediaTypeSelection,
+        ownerID: String?,
+        session: BrowserSession,
+        progress: CollectionSyncProgressHandler?
+    ) async throws -> CollectionBatchSyncResult {
+        var selected: [BuiltInCollection] = []
+        for collection in collections where collection.site == "twitter" && !selected.contains(collection) {
+            selected.append(collection)
+        }
+        var active = selected
+        var continuations: [BuiltInCollection: String] = [:]
+        var scannedOccurrences = 0
+        var seen = Set<ArchiveIdentity>()
+        var downloaded = 0
+        var skipped = 0
+        var unarchived = 0
+        var attempted = 0
+        var remaining = 0
+        var failures: [CollectionSyncFailure] = []
+        var stoppedReason: String?
+        var pageNumber = 0
+
+        while !active.isEmpty {
+            if Task.isCancelled {
+                stoppedReason = "Cancelled"
+                break
+            }
+            pageNumber += 1
+            await progress?(CollectionSyncProgress(stage: .listing, completedItems: scannedOccurrences,
+                downloaded: downloaded, skippedAlreadyArchived: skipped, failed: failures.count,
+                message: "Loading X page \(pageNumber)"))
+
+            let page: XCollectionPageResult
+            do {
+                page = try await galleryDl.scanCollectionPage(
+                    active, accountName: accountName, cookiesFromBrowser: cookiesFromBrowser,
+                    browserProfile: browserProfile, browserContainer: browserContainer,
+                    mediaTypes: mediaTypes, continuations: continuations, pageSize: 50,
+                    expectedOwnerID: ownerID
+                )
+            } catch is CancellationError {
+                stoppedReason = "Cancelled"
+                break
+            } catch let error as GalleryDlError {
+                if Self.shouldStopXRequests(after: error) {
+                    try persistCooldownIfNeeded(error, session: session, ownerID: ownerID)
+                } else if scannedOccurrences == 0 {
+                    throw error
+                }
+                stoppedReason = error.localizedDescription
+                break
+            }
+
+            let data = try await pagedBatchData(collections: active, rawItems: page.items,
+                ownerID: ownerID, diagnostics: page.diagnostics)
+            scannedOccurrences += data.result.scannedOccurrences
+            for item in data.result.items { seen.insert(item.item.archiveIdentity) }
+
+            let batch = try await syncBatchData(data, ownerID: ownerID, session: session,
+                cookiesFromBrowser: cookiesFromBrowser, outputDirectory: outputDirectory,
+                mediaTypes: mediaTypes, dryRun: false, progress: progress)
+            downloaded += batch.downloaded
+            skipped += batch.skippedAlreadyArchived
+            unarchived += batch.unarchived
+            attempted += batch.attempted
+            remaining += batch.remaining
+            failures.append(contentsOf: batch.failures)
+            if let reason = batch.stoppedReason {
+                stoppedReason = reason
+                break
+            }
+
+            continuations = page.continuations
+            active = selected.filter { continuations[$0] != nil }
+        }
+
+        let result = CollectionBatchSyncResult(collections: selected,
+            scannedOccurrences: scannedOccurrences, uniqueMedia: seen.count,
+            duplicatesCollapsed: max(0, scannedOccurrences - seen.count),
+            unarchived: unarchived, downloaded: downloaded,
+            skippedAlreadyArchived: skipped, failed: failures.count,
+            attempted: attempted, remaining: remaining, stoppedReason: stoppedReason,
+            dryRun: false, failures: failures)
+        lastExecutionNote = stoppedReason == nil
+            ? "X history was processed page by page; downloads were archived before the next page was requested."
+            : "X history stopped after completed pages were archived. A later run starts from the newest page and safely skips completed media while walking back to older items."
+        await progress?(CollectionSyncProgress(stage: stoppedReason == nil ? .completed : .stopped,
+            completedItems: attempted + skipped, downloaded: downloaded,
+            skippedAlreadyArchived: skipped, failed: failures.count, message: stoppedReason))
+        return result
+    }
+
+    public func retryFailures(
+        _ inputFailures: [CollectionSyncFailure],
+        accountName: String? = nil,
+        cookiesFromBrowser: BrowserCookieSource,
+        browserProfile: String? = nil,
+        browserContainer: String? = nil,
+        outputDirectory: URL? = nil,
+        mediaTypes: MediaTypeSelection = .defaultSelection,
+        progress: CollectionSyncProgressHandler? = nil
+    ) async throws -> CollectionBatchSyncResult {
+        var failuresToRetry: [CollectionSyncFailure] = []
+        var seenFailures = Set<String>()
+        for failure in inputFailures where seenFailures.insert(failure.id).inserted {
+            failuresToRetry.append(failure)
+        }
+        let session = BrowserSession(browser: cookiesFromBrowser, profile: browserProfile, container: browserContainer)
+        let xFailures = failuresToRetry.filter { $0.site == "twitter" }
+        let xCollections = xFailures.compactMap { failure in
+            failure.collectionName.flatMap { BuiltInCollection.resolve(site: "twitter", collection: $0) }
+        }
+        let sessionLease = try xFailures.isEmpty ? nil : acquireXWork(scope: XWorkScope(session: session))
+        _ = sessionLease
+        let ownerID = try xFailures.isEmpty ? nil : await verifiedOwnerIDIfNeeded(
+            collections: xCollections.isEmpty ? [.xBookmarks] : xCollections,
+            accountName: accountName, session: session
+        )
+        if !xFailures.isEmpty, ownerID == nil {
+            throw GalleryDlError.scanFailed("X account identity could not be server-verified, so failed X items were not retried.")
+        }
+        let ownerLease = try ownerID.map { try acquireXWork(scope: XWorkScope(ownerID: $0, session: session)) }
+        _ = ownerLease
+
+        var downloaded = 0
+        var skipped = 0
+        var attempted = 0
+        var remaining = 0
+        var retryFailures: [CollectionSyncFailure] = []
+        var stoppedReason: String?
+        var unarchived = 0
+
+        for failure in failuresToRetry {
+            guard let sourceURL = failure.sourceURL, !sourceURL.isEmpty else { continue }
+            let item = CollectionItem(site: failure.site,
+                collectionName: failure.collectionName ?? "retry",
+                mediaID: failure.mediaID, sourceURL: sourceURL,
+                title: failure.title, mediaType: failure.mediaType ?? .video)
+            if try await currentlyDownloaded(item) { skipped += 1 } else { unarchived += 1 }
+        }
+
+        await progress?(CollectionSyncProgress(stage: .downloading, totalItems: failuresToRetry.count,
+            skippedAlreadyArchived: skipped))
+        for (index, failure) in failuresToRetry.enumerated() {
+            if Task.isCancelled {
+                remaining = failuresToRetry.count - index
+                stoppedReason = "Cancelled"
+                break
+            }
+            guard let sourceURL = failure.sourceURL, !sourceURL.isEmpty else {
+                retryFailures.append(CollectionSyncFailure(site: failure.site, mediaID: failure.mediaID,
+                    title: failure.title, sourceURL: failure.sourceURL, collectionName: failure.collectionName,
+                    mediaType: failure.mediaType, error: "Original source URL is unavailable for retry."))
+                continue
+            }
+            let stub = CollectionItem(site: failure.site,
+                collectionName: failure.collectionName ?? "retry", mediaID: failure.mediaID,
+                sourceURL: sourceURL, title: failure.title, mediaType: failure.mediaType ?? .video)
+            if try await currentlyDownloaded(stub) {
+                await progress?(CollectionSyncProgress(stage: .downloading,
+                    completedItems: index + 1, totalItems: failuresToRetry.count,
+                    downloaded: downloaded, skippedAlreadyArchived: skipped, failed: retryFailures.count))
+                continue
+            }
+            attempted += 1
+            do {
+                if failure.site == "twitter" {
+                    guard let refreshed = try await galleryDl.refreshItem(stub, session: session, mediaTypes: mediaTypes) else {
+                        throw GalleryDlError.scanFailed("The original X post no longer returned this media item.")
+                    }
+                    try await downloadDirectCollectionItem(refreshed, outputDirectory: outputDirectory,
+                        session: session, mediaTypes: mediaTypes)
+                    downloaded += 1
+                } else {
+                    let outcome = try await downloadService.download(url: sourceURL,
+                        outputDirectory: outputDirectory, cookiesFromBrowser: cookiesFromBrowser)
+                    switch outcome {
+                    case .downloaded: downloaded += 1
+                    case .skippedAlreadyArchived: skipped += 1
+                    }
+                }
+            } catch is CancellationError {
+                remaining = failuresToRetry.count - index
+                stoppedReason = "Cancelled"
+                break
+            } catch let error as GalleryDlError where Self.shouldStopXRequests(after: error) {
+                try persistCooldownIfNeeded(error, session: session, ownerID: ownerID)
+                retryFailures.append(syncFailure(for: stub, error: error))
+                remaining = failuresToRetry.count - index - 1
+                stoppedReason = error.localizedDescription
+                break
+            } catch {
+                retryFailures.append(syncFailure(for: stub, error: error))
+            }
+            await progress?(CollectionSyncProgress(stage: .downloading,
+                completedItems: index + 1, totalItems: failuresToRetry.count,
+                downloaded: downloaded, skippedAlreadyArchived: skipped, failed: retryFailures.count))
+        }
+
+        let collections = Array(Set(failuresToRetry.compactMap { failure in
+            failure.collectionName.flatMap { BuiltInCollection.resolve(site: failure.site, collection: $0) }
+        })).sorted { $0.rawValue < $1.rawValue }
+        let result = CollectionBatchSyncResult(collections: collections,
+            scannedOccurrences: failuresToRetry.count, uniqueMedia: failuresToRetry.count,
+            duplicatesCollapsed: 0, unarchived: unarchived, downloaded: downloaded,
+            skippedAlreadyArchived: skipped, failed: retryFailures.count,
+            attempted: attempted, remaining: remaining, stoppedReason: stoppedReason,
+            dryRun: false, failures: retryFailures)
+        await progress?(CollectionSyncProgress(stage: stoppedReason == nil ? .completed : .stopped,
+            completedItems: failuresToRetry.count - remaining, totalItems: failuresToRetry.count,
+            downloaded: downloaded, skippedAlreadyArchived: skipped, failed: retryFailures.count,
+            message: stoppedReason))
+        return result
     }
 
     private func executionContext(
@@ -697,15 +1022,30 @@ public actor CollectionSyncService {
             let seconds = min(max(retryAfter ?? 15 * 60, 60), 6 * 60 * 60)
             let until = Date().addingTimeInterval(seconds)
             for scope in scopes {
-                try XWorkCoordinator.setCooldown(scope: scope, until: until, reason: "an X rate limit")
+                try setXCooldown(scope: scope, until: until, reason: "an X rate limit")
             }
         case .securityChallenge:
             let until = Date().addingTimeInterval(30 * 60)
             for scope in scopes {
-                try XWorkCoordinator.setCooldown(scope: scope, until: until, reason: "an X security check")
+                try setXCooldown(scope: scope, until: until, reason: "an X security check")
             }
         default:
             break
+        }
+    }
+
+    private func acquireXWork(scope: XWorkScope) throws -> XWorkLease {
+        if let xWorkDirectory {
+            return try XWorkCoordinator.acquire(scope: scope, directory: xWorkDirectory)
+        }
+        return try XWorkCoordinator.acquire(scope: scope)
+    }
+
+    private func setXCooldown(scope: XWorkScope, until: Date, reason: String) throws {
+        if let xWorkDirectory {
+            try XWorkCoordinator.setCooldown(scope: scope, until: until, reason: reason, directory: xWorkDirectory)
+        } else {
+            try XWorkCoordinator.setCooldown(scope: scope, until: until, reason: reason)
         }
     }
 

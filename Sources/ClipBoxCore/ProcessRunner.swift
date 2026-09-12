@@ -87,7 +87,7 @@ private final class PipeCapture: @unchecked Sendable {
 enum ProcessRunner {
     static func runAsync(
         executable: URL, arguments: [String], standardInput: Data? = nil,
-        timeout: TimeInterval = 300
+        timeout: TimeInterval? = 300
     ) async throws -> ProcessResult {
         let control = ProcessControl()
         return try await withTaskCancellationHandler {

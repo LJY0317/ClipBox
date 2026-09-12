@@ -106,6 +106,223 @@ final class ClipBoxCoreTests: XCTestCase {
         XCTAssertEqual(count, 1)
     }
 
+    func testDownloadedArchiveRecordIsNotDowngradedByLaterFailure() async throws {
+        let temp = try makeTemporaryDirectory()
+        defer { try? FileManager.default.removeItem(at: temp) }
+        let store = try ArchiveStore(databaseURL: temp.appendingPathComponent("archive.sqlite3"))
+        let media = makeMedia()
+        try await store.record(media: media, status: .downloaded, outputPath: "/archive/final.mp4")
+        try await store.record(media: media, status: .failed, error: "synthetic retry failure")
+        let record = try await store.record(identity: media.archiveIdentity)
+        XCTAssertEqual(record?.status, .downloaded)
+        XCTAssertEqual(record?.outputPath, "/archive/final.mp4")
+        XCTAssertNil(record?.lastError)
+    }
+
+    func testYtDlpCancellationPreservesPartialAndRetryableArchiveState() async throws {
+        let temp = try makeTemporaryDirectory()
+        defer { try? FileManager.default.removeItem(at: temp) }
+        let partial = temp.appendingPathComponent("synthetic.part")
+        let executable = temp.appendingPathComponent("yt-dlp")
+        let script = """
+        #!/bin/sh
+        case " $* " in
+          *" --dump-single-json "*)
+            echo '{"id":"cancel123","display_id":"cancel123","extractor_key":"Youtube","webpage_url":"https://www.youtube.com/watch?v=cancel123","title":"Cancelable","format_id":"720","formats":[]}'
+            exit 0
+            ;;
+          *" --print "*)
+            printf partial > '\(partial.path)'
+            exec /bin/sleep 20
+            ;;
+        esac
+        exit 2
+        """
+        try script.write(to: executable, atomically: true, encoding: .utf8)
+        try FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: executable.path)
+        let store = try ArchiveStore(databaseURL: temp.appendingPathComponent("archive.sqlite3"))
+        let service = try ClipBoxService(archive: store, ytDlp: YtDlpClient(executableURL: executable))
+        let task = Task {
+            try await service.download(url: "https://www.youtube.com/watch?v=cancel123", outputDirectory: temp)
+        }
+        for _ in 0..<100 where !FileManager.default.fileExists(atPath: partial.path) {
+            try await Task.sleep(for: .milliseconds(20))
+        }
+        XCTAssertTrue(FileManager.default.fileExists(atPath: partial.path), "fake yt-dlp never entered the download phase")
+        task.cancel()
+        do {
+            _ = try await task.value
+            XCTFail("Expected cancellation")
+        } catch is CancellationError { }
+        XCTAssertTrue(FileManager.default.fileExists(atPath: partial.path))
+        let record = try await store.record(identity: ArchiveIdentity(site: "youtube", mediaID: "cancel123"))
+        XCTAssertEqual(record?.status, .discovered)
+    }
+
+    func testConsumedXPreviewDoesNotHideNewItemOnNextSync() async throws {
+        let temp = try makeTemporaryDirectory()
+        defer { try? FileManager.default.removeItem(at: temp) }
+        let state = temp.appendingPathComponent("state")
+        try "old".write(to: state, atomically: true, encoding: .utf8)
+        let gallery = try makeFakeGalleryDl(in: temp, interpreterScript: """
+        #!/bin/sh
+        case "$2" in
+          *"user_by_rest_id"*) echo '{"connected":true,"cookieUserID":"424242","serverUserID":"424242","handle":"ExampleUser","serverVerified":true}'; exit 0 ;;
+        esac
+        if [ "$(cat '\(state.path)')" = "new" ]; then
+          cat <<'JSON'
+        [[3,"https://video.twimg.com/ext_tw_video/9101/old.mp4",{"tweet_id":8101,"author":{"id":424242,"name":"ExampleUser"},"type":"video","extension":"mp4"}],[3,"https://video.twimg.com/ext_tw_video/9102/new.mp4",{"tweet_id":8102,"author":{"id":424242,"name":"ExampleUser"},"type":"video","extension":"mp4"}]]
+        JSON
+        else
+          cat <<'JSON'
+        [[3,"https://video.twimg.com/ext_tw_video/9101/old.mp4",{"tweet_id":8101,"author":{"id":424242,"name":"ExampleUser"},"type":"video","extension":"mp4"}]]
+        JSON
+        fi
+        """)
+        let curl = temp.appendingPathComponent("curl")
+        try fakeCurlScript.write(to: curl, atomically: true, encoding: .utf8)
+        try FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: curl.path)
+        let store = try ArchiveStore(databaseURL: temp.appendingPathComponent("archive.sqlite3"))
+        let service = try CollectionSyncService(archive: store,
+            galleryDl: GalleryDlClient(executableURL: gallery),
+            directDownloader: DirectMediaDownloader(executableURL: curl),
+            xWorkDirectory: temp.appendingPathComponent("coord"))
+        let session: BrowserCookieSource = .chrome
+        _ = try await service.beginPagedXPreview(collections: [.xBookmarks], accountName: "ExampleUser",
+            cookiesFromBrowser: session, pageSize: 50)
+        let first = try await service.syncLoadedXPreview(collections: [.xBookmarks], accountName: "ExampleUser",
+            cookiesFromBrowser: session, outputDirectory: temp)
+        XCTAssertEqual(first?.downloaded, 1)
+        try "new".write(to: state, atomically: true, encoding: .utf8)
+        let second = try await service.sync(collections: [.xBookmarks], accountName: "ExampleUser",
+            cookiesFromBrowser: session, outputDirectory: temp, limit: 50)
+        XCTAssertEqual(second.downloaded, 1)
+        XCTAssertEqual(second.skippedAlreadyArchived, 1)
+        let newItemDownloaded = try await store.downloaded(
+            identity: ArchiveIdentity(site: "twitter", mediaID: "9102")
+        )
+        XCTAssertTrue(newItemDownloaded)
+    }
+
+    func testXRefreshRateLimitStopsBeforeNextMediaRequest() async throws {
+        let temp = try makeTemporaryDirectory()
+        defer { try? FileManager.default.removeItem(at: temp) }
+        let calls = temp.appendingPathComponent("curl-calls")
+        let gallery = try makeFakeGalleryDl(in: temp, interpreterScript: """
+        #!/bin/sh
+        case "$2" in
+          *"user_by_rest_id"*) echo '{"connected":true,"cookieUserID":"424242","serverUserID":"424242","handle":"ExampleUser","serverVerified":true}'; exit 0 ;;
+        esac
+        for input in "$@"; do
+          case "$input" in
+            *"/status/"*) echo 'HTTP 429 rate limit retry-after: 120' >&2; exit 1 ;;
+          esac
+        done
+        cat <<'JSON'
+        [[3,"https://video.twimg.com/ext_tw_video/9201/one.mp4",{"tweet_id":8201,"author":{"id":424242,"name":"ExampleUser"},"type":"video","extension":"mp4"}],[3,"https://video.twimg.com/ext_tw_video/9202/two.mp4",{"tweet_id":8202,"author":{"id":424242,"name":"ExampleUser"},"type":"video","extension":"mp4"}]]
+        JSON
+        """)
+        let curl = temp.appendingPathComponent("curl")
+        try """
+        #!/bin/sh
+        echo x >> '\(calls.path)'
+        echo 403
+        exit 22
+        """.write(to: curl, atomically: true, encoding: .utf8)
+        try FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: curl.path)
+        let coord = temp.appendingPathComponent("coord")
+        let store = try ArchiveStore(databaseURL: temp.appendingPathComponent("archive.sqlite3"))
+        let service = try CollectionSyncService(archive: store,
+            galleryDl: GalleryDlClient(executableURL: gallery),
+            directDownloader: DirectMediaDownloader(executableURL: curl), xWorkDirectory: coord)
+        let result = try await service.sync(collections: [.xBookmarks], accountName: "ExampleUser",
+            cookiesFromBrowser: .chrome, outputDirectory: temp, limit: 50)
+        XCTAssertEqual(result.failed, 1)
+        XCTAssertEqual(result.remaining, 1)
+        XCTAssertNotNil(result.stoppedReason)
+        let callCount = (try? String(contentsOf: calls, encoding: .utf8))?.split(separator: "\n").count ?? 0
+        XCTAssertEqual(callCount, 1)
+        XCTAssertGreaterThan(XWorkCoordinator.cooldownRemaining(
+            scope: XWorkScope(session: BrowserSession(browser: .chrome)), directory: coord) ?? 0, 0)
+    }
+
+    func testRestartAfterCancellationSkipsCompletedMediaAndContinuesRemainingItems() async throws {
+        let temp = try makeTemporaryDirectory()
+        defer { try? FileManager.default.removeItem(at: temp) }
+        let calls = temp.appendingPathComponent("curl-calls")
+        let gallery = try makeFakeGalleryDl(in: temp, interpreterScript: """
+        #!/bin/sh
+        case "$2" in
+          *"user_by_rest_id"*) echo '{"connected":true,"cookieUserID":"424242","serverUserID":"424242","handle":"ExampleUser","serverVerified":true}'; exit 0 ;;
+        esac
+        cat <<'JSON'
+        [[3,"https://video.twimg.com/ext_tw_video/9301/one.mp4",{"tweet_id":8301,"author":{"id":424242,"name":"ExampleUser"},"type":"video","extension":"mp4"}],[3,"https://video.twimg.com/ext_tw_video/9302/two.mp4",{"tweet_id":8302,"author":{"id":424242,"name":"ExampleUser"},"type":"video","extension":"mp4"}],[3,"https://video.twimg.com/ext_tw_video/9303/three.mp4",{"tweet_id":8303,"author":{"id":424242,"name":"ExampleUser"},"type":"video","extension":"mp4"}]]
+        JSON
+        """)
+        let curl = temp.appendingPathComponent("curl")
+        try """
+        #!/bin/sh
+        count=1
+        if [ -f '\(calls.path)' ]; then count=$(( $(wc -l < '\(calls.path)') + 1 )); fi
+        echo "$count" >> '\(calls.path)'
+        output=""
+        while [ "$#" -gt 0 ]; do
+          if [ "$1" = "--output" ]; then shift; output="$1"; fi
+          shift
+        done
+        printf 'synthetic mp4 data' > "$output"
+        if [ "$count" -eq 2 ]; then exec /bin/sleep 20; fi
+        exit 0
+        """.write(to: curl, atomically: true, encoding: .utf8)
+        try FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: curl.path)
+        let store = try ArchiveStore(databaseURL: temp.appendingPathComponent("archive.sqlite3"))
+        let coord = temp.appendingPathComponent("coord")
+        let firstService = try CollectionSyncService(archive: store,
+            galleryDl: GalleryDlClient(executableURL: gallery),
+            directDownloader: DirectMediaDownloader(executableURL: curl), xWorkDirectory: coord)
+        let firstTask = Task {
+            try await firstService.sync(collections: [.xBookmarks], accountName: "ExampleUser",
+                cookiesFromBrowser: .chrome, outputDirectory: temp, limit: nil)
+        }
+        for _ in 0..<150 {
+            let count = (try? String(contentsOf: calls, encoding: .utf8))?.split(separator: "\n").count ?? 0
+            if count >= 2 { break }
+            try await Task.sleep(for: .milliseconds(20))
+        }
+        firstTask.cancel()
+        let first = try await firstTask.value
+        XCTAssertEqual(first.downloaded, 1)
+        XCTAssertEqual(first.remaining, 2)
+        XCTAssertEqual(first.stoppedReason, "Cancelled")
+
+        let secondService = try CollectionSyncService(archive: store,
+            galleryDl: GalleryDlClient(executableURL: gallery),
+            directDownloader: DirectMediaDownloader(executableURL: curl), xWorkDirectory: coord)
+        let second = try await secondService.sync(collections: [.xBookmarks], accountName: "ExampleUser",
+            cookiesFromBrowser: .chrome, outputDirectory: temp, limit: nil)
+        XCTAssertEqual(second.downloaded, 2)
+        XCTAssertEqual(second.skippedAlreadyArchived, 1)
+        let archiveCount = try await store.count()
+        XCTAssertEqual(archiveCount, 3)
+    }
+
+    func testFailedItemCanBeRetriedThroughSharedCollectionCore() async throws {
+        let temp = try makeTemporaryDirectory()
+        defer { try? FileManager.default.removeItem(at: temp) }
+        let ytDlp = temp.appendingPathComponent("yt-dlp")
+        try fakeYtDlpScript.write(to: ytDlp, atomically: true, encoding: .utf8)
+        try FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: ytDlp.path)
+        let store = try ArchiveStore(databaseURL: temp.appendingPathComponent("archive.sqlite3"))
+        let service = try CollectionSyncService(archive: store, ytDlp: YtDlpClient(executableURL: ytDlp))
+        let failure = CollectionSyncFailure(site: "youtube", mediaID: "new456", title: "Brand New Video",
+            sourceURL: "https://www.youtube.com/watch?v=new456", collectionName: "liked", mediaType: .video,
+            error: "synthetic first-attempt failure")
+        let result = try await service.retryFailures([failure], cookiesFromBrowser: .chrome, outputDirectory: temp)
+        XCTAssertEqual(result.downloaded, 1)
+        XCTAssertEqual(result.failed, 0)
+        XCTAssertEqual(result.attempted, 1)
+    }
+
     func testPortableBackupRestoresHistoryIntoAnotherDatabaseByMerge() async throws {
         let temp = try makeTemporaryDirectory()
         defer { try? FileManager.default.removeItem(at: temp) }
@@ -309,12 +526,7 @@ final class ClipBoxCoreTests: XCTestCase {
         let temp = try makeTemporaryDirectory()
         defer { try? FileManager.default.removeItem(at: temp) }
 
-        let fakeGalleryDl = temp.appendingPathComponent("gallery-dl")
-        try fakeGalleryDlScript.write(to: fakeGalleryDl, atomically: true, encoding: .utf8)
-        try FileManager.default.setAttributes(
-            [.posixPermissions: 0o755],
-            ofItemAtPath: fakeGalleryDl.path
-        )
+        let fakeGalleryDl = try makeFakeGalleryDl(in: temp, interpreterScript: fakeGalleryInterpreterScript)
 
         let fakeCurl = temp.appendingPathComponent("curl")
         try fakeCurlScript.write(to: fakeCurl, atomically: true, encoding: .utf8)
@@ -432,12 +644,8 @@ final class ClipBoxCoreTests: XCTestCase {
         let temp = try makeTemporaryDirectory()
         defer { try? FileManager.default.removeItem(at: temp) }
 
-        let fakeGalleryDl = temp.appendingPathComponent("gallery-dl")
-        try fakeGalleryDlOverlappingCollectionsScript.write(to: fakeGalleryDl, atomically: true, encoding: .utf8)
-        try FileManager.default.setAttributes(
-            [.posixPermissions: 0o755],
-            ofItemAtPath: fakeGalleryDl.path
-        )
+        let fakeGalleryDl = try makeFakeGalleryDl(in: temp,
+            interpreterScript: fakeGalleryOverlappingInterpreterScript)
 
         let fakeCurl = temp.appendingPathComponent("curl")
         try fakeCurlScript.write(to: fakeCurl, atomically: true, encoding: .utf8)
@@ -484,8 +692,8 @@ final class ClipBoxCoreTests: XCTestCase {
         XCTAssertEqual(firstSync.failed, 0)
 
         let archiveCount = try await store.count()
-        let likesMembershipCount = try await store.collectionCount(site: "twitter", collectionName: "likes")
-        let bookmarkMembershipCount = try await store.collectionCount(site: "twitter", collectionName: "bookmarks")
+        let likesMembershipCount = try await store.collectionCount(site: "twitter", collectionName: "likes", ownerID: "424242")
+        let bookmarkMembershipCount = try await store.collectionCount(site: "twitter", collectionName: "bookmarks", ownerID: "424242")
         XCTAssertEqual(archiveCount, 3)
         XCTAssertEqual(likesMembershipCount, 2)
         XCTAssertEqual(bookmarkMembershipCount, 2)
@@ -851,6 +1059,71 @@ final class ClipBoxCoreTests: XCTestCase {
         esac
         echo "unsupported fake yt-dlp invocation" >&2
         exit 2
+        """
+    }
+
+    private func makeFakeGalleryDl(in directory: URL, interpreterScript: String) throws -> URL {
+        let interpreter = directory.appendingPathComponent("python-clipbox-test")
+        try interpreterScript.write(to: interpreter, atomically: true, encoding: .utf8)
+        try FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: interpreter.path)
+        let executable = directory.appendingPathComponent("gallery-dl")
+        try "#!\(interpreter.path)\n".write(to: executable, atomically: true, encoding: .utf8)
+        try FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: executable.path)
+        return executable
+    }
+
+    private var fakeGalleryInterpreterScript: String {
+        """
+        #!/bin/sh
+        case "$2" in
+          *"user_by_rest_id"*)
+            echo '{"connected":true,"cookieUserID":"424242","serverUserID":"424242","handle":"ExampleUser","serverVerified":true}'
+            exit 0
+            ;;
+        esac
+        for input in "$@"; do
+          case "$input" in
+            *"/bookmarks"*|*"/likes"*|*"/status/"*)
+              cat <<'JSON'
+        [
+          [2,{"tweet_id":7001,"content":"Mixed media in one post","date":"2026-09-08 10:00:00","author":{"id":424242,"name":"ExampleUser"},"count":4}],
+          [3,"https://video.twimg.com/ext_tw_video/9001/pu/vid/1280x720/example-one.mp4",{"tweet_id":7001,"content":"Mixed media in one post","date":"2026-09-08 10:00:00","author":{"id":424242,"name":"ExampleUser"},"num":1,"type":"video","extension":"mp4","width":1280,"height":720,"bitrate":2176000}],
+          [3,"https://video.twimg.com/ext_tw_video/9002/pu/vid/1280x720/example-two.mp4",{"tweet_id":7001,"content":"Mixed media in one post","date":"2026-09-08 10:00:00","author":{"id":424242,"name":"ExampleUser"},"num":2,"type":"video","extension":"mp4","width":1280,"height":720,"bitrate":2176000}],
+          [3,"https://pbs.twimg.com/media/PhotoTokenABC?format=jpg&name=orig",{"tweet_id":7001,"content":"Mixed media in one post","date":"2026-09-08 10:00:00","author":{"id":424242,"name":"ExampleUser"},"num":3,"type":"photo","filename":"PhotoTokenABC","extension":"jpg","width":2048,"height":1365}],
+          [3,"https://video.twimg.com/tweet_video/AnimTokenXYZ.mp4",{"tweet_id":7001,"content":"Mixed media in one post","date":"2026-09-08 10:00:00","author":{"id":424242,"name":"ExampleUser"},"num":4,"type":"animated_gif","filename":"AnimTokenXYZ","extension":"mp4","width":640,"height":360}],
+          [2,{"tweet_id":7002,"content":"Another video post","date":"2026-09-08 11:00:00","author":{"id":525252,"name":"AnotherUser"},"count":1}],
+          [3,"https://video.twimg.com/amplify_video/9003/vid/avc1/1920x1080/example-three.mp4",{"tweet_id":7002,"content":"Another video post","date":"2026-09-08 11:00:00","author":{"id":525252,"name":"AnotherUser"},"num":1,"type":"video","extension":"mp4","width":1920,"height":1080,"bitrate":5000000}]
+        ]
+        JSON
+              ;;
+          esac
+        done
+        """
+    }
+
+    private var fakeGalleryOverlappingInterpreterScript: String {
+        """
+        #!/bin/sh
+        case "$2" in
+          *"user_by_rest_id"*)
+            echo '{"connected":true,"cookieUserID":"424242","serverUserID":"424242","handle":"ExampleUser","serverVerified":true}'
+            exit 0
+            ;;
+        esac
+        for input in "$@"; do
+          case "$input" in
+            *"/likes"*)
+              cat <<'JSON'
+        [[3,"https://video.twimg.com/ext_tw_video/9001/pu/vid/1280x720/shared.mp4",{"tweet_id":7001,"content":"Shared media","date":"2026-09-08 10:00:00","author":{"id":424242,"name":"ExampleUser"},"num":1,"type":"video","extension":"mp4","width":1280,"height":720,"bitrate":2176000}],[3,"https://video.twimg.com/ext_tw_video/9002/pu/vid/1280x720/likes-only.mp4",{"tweet_id":7002,"content":"Likes only","date":"2026-09-08 11:00:00","author":{"id":424242,"name":"ExampleUser"},"num":1,"type":"video","extension":"mp4","width":1280,"height":720,"bitrate":2176000}]]
+        JSON
+              ;;
+            *"/bookmarks"*)
+              cat <<'JSON'
+        [[3,"https://video.twimg.com/ext_tw_video/9001/pu/vid/1280x720/shared.mp4",{"tweet_id":7001,"content":"Shared media","date":"2026-09-08 10:00:00","author":{"id":424242,"name":"ExampleUser"},"num":1,"type":"video","extension":"mp4","width":1280,"height":720,"bitrate":2176000}],[3,"https://video.twimg.com/ext_tw_video/9003/pu/vid/1920x1080/bookmarks-only.mp4",{"tweet_id":7003,"content":"Bookmarks only","date":"2026-09-08 12:00:00","author":{"id":525252,"name":"AnotherUser"},"num":1,"type":"video","extension":"mp4","width":1920,"height":1080,"bitrate":5000000}]]
+        JSON
+              ;;
+          esac
+        done
         """
     }
 
