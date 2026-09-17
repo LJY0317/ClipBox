@@ -63,3 +63,6 @@ __pycache__/
 *.temp
 *.bak
 *.orig
+
+# Local agent handoff/status document
+STATE.md

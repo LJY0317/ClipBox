@@ -416,11 +416,15 @@ struct ClipBoxCommand {
             print("  downloaded\t\(result.downloaded)")
             print("  skipped-archived\t\(result.skippedAlreadyArchived)")
             print("  failed\t\(result.failed)")
+            print("  attempted\t\(result.attempted)")
+            print("  remaining\t\(result.remaining)")
+            if let reason = result.stoppedReason { print("  stopped\t\(reason)") }
             if result.dryRun {
                 print("  note\tDry run: no collection checkpoint or downloads were written.")
             }
             for failure in result.failures {
                 print("  failure\t\(failure.mediaID)\t\(failure.error)")
+                if let sourceURL = failure.sourceURL { print("  source\t\(failure.mediaID)\t\(sourceURL)") }
             }
             return
         }
@@ -449,11 +453,15 @@ struct ClipBoxCommand {
         print("  downloaded\t\(result.downloaded)")
         print("  skipped-archived\t\(result.skippedAlreadyArchived)")
         print("  failed\t\(result.failed)")
+        print("  attempted\t\(result.attempted)")
+        print("  remaining\t\(result.remaining)")
+        if let reason = result.stoppedReason { print("  stopped\t\(reason)") }
         if result.dryRun {
             print("  note\tDry run: no collection checkpoint or downloads were written.")
         }
         for failure in result.failures {
             print("  failure\t\(failure.mediaID)\t\(failure.error)")
+            if let sourceURL = failure.sourceURL { print("  source\t\(failure.mediaID)\t\(sourceURL)") }
         }
     }
 

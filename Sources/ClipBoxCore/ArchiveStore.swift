@@ -314,6 +314,48 @@ public actor ArchiveStore {
         return records
     }
 
+    /// Returns X media that was discovered for this verified account but was never
+    /// completed. Direct-media URLs are deliberately absent from the archive; callers
+    /// must refresh the original post before downloading again.
+    public func pendingCollectionMedia(
+        site: String,
+        ownerID: String,
+        collectionNames: [String]
+    ) throws -> [ArchiveRecord] {
+        let names = Array(Set(collectionNames)).sorted()
+        guard !names.isEmpty else { return [] }
+        let placeholders = names.indices.map { "?\($0 + 3)" }.joined(separator: ", ")
+        let sql = """
+        SELECT DISTINCT m.site, m.media_id, m.source_id, m.collection_name, m.source_url, m.creator, m.title,
+               m.published_at, m.first_seen_at, m.downloaded_at, m.width, m.height, m.fps,
+               m.video_codec, m.audio_codec, m.format_id, m.output_path, m.status, m.last_error
+        FROM media m
+        INNER JOIN collection_memberships cm
+          ON cm.site = m.site AND cm.media_id = m.media_id
+        WHERE m.site = ?1
+          AND cm.owner_namespace = ?2
+          AND cm.collection_name IN (\(placeholders))
+          AND m.status IN ('discovered', 'downloading')
+        ORDER BY m.first_seen_at ASC
+        """
+        let statement = try prepare(sql)
+        defer { sqlite3_finalize(statement) }
+        bind(site, at: 1, in: statement)
+        bind(Self.ownerNamespace(ownerID), at: 2, in: statement)
+        for (offset, name) in names.enumerated() {
+            bind(name, at: Int32(offset + 3), in: statement)
+        }
+
+        var records: [ArchiveRecord] = []
+        while true {
+            let step = sqlite3_step(statement)
+            if step == SQLITE_DONE { break }
+            guard step == SQLITE_ROW else { throw currentError() }
+            records.append(decodeRecord(statement))
+        }
+        return records
+    }
+
     public func quickIntegrityCheck() throws -> Bool {
         let statement = try prepare("PRAGMA quick_check")
         defer { sqlite3_finalize(statement) }

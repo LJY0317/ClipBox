@@ -70,6 +70,17 @@ private struct XPreviewPagingState {
     var diagnostics: [CollectionDiagnostic]
 }
 
+public enum CollectionPreviewError: LocalizedError, Sendable {
+    case expired
+
+    public var errorDescription: String? {
+        switch self {
+        case .expired:
+            "The X Preview expired. Start a new Preview so ClipBox can download the same set of items you review."
+        }
+    }
+}
+
 public actor CollectionSyncService {
     private let archive: ArchiveStore
     private let ytDlp: YtDlpClient
@@ -545,9 +556,12 @@ public actor CollectionSyncService {
     ) async throws -> CollectionBatchSyncResult? {
         let session = BrowserSession(browser: cookiesFromBrowser, profile: browserProfile, container: browserContainer)
         let normalizedAccount = BuiltInCollection.normalizedAccountName(accountName)
-        guard let state = xPreviewPaging,
-              Date().timeIntervalSince(state.createdAt) <= xPreviewLifetime,
-              state.collections == collections,
+        guard let state = xPreviewPaging else { return nil }
+        guard Date().timeIntervalSince(state.createdAt) <= xPreviewLifetime else {
+            xPreviewPaging = nil
+            throw CollectionPreviewError.expired
+        }
+        guard state.collections == collections,
               state.accountName == normalizedAccount,
               state.session == session,
               state.mediaTypes == mediaTypes else {
@@ -677,6 +691,17 @@ public actor CollectionSyncService {
         }
 
         _ = try await archive.recordCollectionItems(scanData.membershipItems, ownerID: ownerID)
+        // Save only stable post metadata before beginning a page. If the app quits,
+        // the next full X sync can refresh these posts and finish them without first
+        // walking back through the rest of the history. Direct media URLs are never
+        // written to the archive.
+        for candidate in candidates where candidate.item.site == "twitter" && candidate.item.directMediaURL != nil {
+            try await archive.record(
+                media: mediaMetadata(from: candidate.item),
+                collection: candidate.item.collectionName,
+                status: .discovered
+            )
+        }
         var downloaded = 0
         var skipped = initiallyArchived
         var attempted = 0
@@ -792,6 +817,26 @@ public actor CollectionSyncService {
         var stoppedReason: String?
         var pageNumber = 0
 
+        let resumed = try await resumePendingXMedia(
+            collections: selected, ownerID: ownerID, session: session,
+            outputDirectory: outputDirectory, mediaTypes: mediaTypes, progress: progress
+        )
+        downloaded += resumed.downloaded
+        skipped += resumed.skippedAlreadyArchived
+        unarchived += resumed.unarchived
+        attempted += resumed.attempted
+        remaining += resumed.remaining
+        failures.append(contentsOf: resumed.failures)
+        if let reason = resumed.stoppedReason {
+            lastExecutionNote = "Pending X items were resumed before listing new pages, then the resume stopped: \(reason)"
+            return CollectionBatchSyncResult(collections: selected,
+                scannedOccurrences: resumed.scannedOccurrences, uniqueMedia: resumed.uniqueMedia,
+                duplicatesCollapsed: 0, unarchived: unarchived, downloaded: downloaded,
+                skippedAlreadyArchived: skipped, failed: failures.count,
+                attempted: attempted, remaining: remaining, stoppedReason: reason,
+                dryRun: false, failures: failures)
+        }
+
         while !active.isEmpty {
             if Task.isCancelled {
                 stoppedReason = "Cancelled"
@@ -862,6 +907,85 @@ public actor CollectionSyncService {
         return result
     }
 
+    private func resumePendingXMedia(
+        collections: [BuiltInCollection],
+        ownerID: String?,
+        session: BrowserSession,
+        outputDirectory: URL?,
+        mediaTypes: MediaTypeSelection,
+        progress: CollectionSyncProgressHandler?
+    ) async throws -> CollectionBatchSyncResult {
+        guard let ownerID else {
+            return CollectionBatchSyncResult(collections: collections, scannedOccurrences: 0, uniqueMedia: 0,
+                duplicatesCollapsed: 0, unarchived: 0, downloaded: 0, skippedAlreadyArchived: 0,
+                failed: 0, dryRun: false, failures: [])
+        }
+        let records = try await archive.pendingCollectionMedia(
+            site: "twitter", ownerID: ownerID, collectionNames: collections.map(\.collectionName)
+        )
+        guard !records.isEmpty else {
+            return CollectionBatchSyncResult(collections: collections, scannedOccurrences: 0, uniqueMedia: 0,
+                duplicatesCollapsed: 0, unarchived: 0, downloaded: 0, skippedAlreadyArchived: 0,
+                failed: 0, dryRun: false, failures: [])
+        }
+
+        var downloaded = 0
+        var skipped = 0
+        var attempted = 0
+        var remaining = 0
+        var failures: [CollectionSyncFailure] = []
+        var stoppedReason: String?
+        await progress?(CollectionSyncProgress(stage: .downloading, totalItems: records.count,
+            message: "Resuming \(records.count) pending X item(s)"))
+
+        for (index, record) in records.enumerated() {
+            if Task.isCancelled {
+                remaining = records.count - index
+                stoppedReason = "Cancelled"
+                break
+            }
+            guard let sourceURL = record.sourceURL, let collection = record.collection else {
+                continue
+            }
+            let item = CollectionItem(site: record.site, collectionName: collection, mediaID: record.mediaID,
+                sourceID: record.sourceID, sourceURL: sourceURL, title: record.title, creator: record.creator,
+                mediaType: .video)
+            if try await currentlyDownloaded(item) {
+                skipped += 1
+                continue
+            }
+            attempted += 1
+            do {
+                guard let refreshed = try await galleryDl.refreshItem(item, session: session, mediaTypes: .all) else {
+                    throw GalleryDlError.scanFailed("The original X post no longer returned this media item.")
+                }
+                try await downloadDirectCollectionItem(refreshed, outputDirectory: outputDirectory,
+                    session: session, mediaTypes: mediaTypes)
+                downloaded += 1
+            } catch is CancellationError {
+                remaining = records.count - index
+                stoppedReason = "Cancelled"
+                break
+            } catch let error as GalleryDlError where Self.shouldStopXRequests(after: error) {
+                try persistCooldownIfNeeded(error, session: session, ownerID: ownerID)
+                remaining = records.count - index - 1
+                stoppedReason = error.localizedDescription
+                failures.append(syncFailure(for: item, error: error))
+                break
+            } catch {
+                failures.append(syncFailure(for: item, error: error))
+            }
+            await progress?(CollectionSyncProgress(stage: .downloading, completedItems: index + 1,
+                totalItems: records.count, downloaded: downloaded, skippedAlreadyArchived: skipped,
+                failed: failures.count))
+        }
+        return CollectionBatchSyncResult(collections: collections, scannedOccurrences: records.count,
+            uniqueMedia: records.count, duplicatesCollapsed: 0, unarchived: records.count,
+            downloaded: downloaded, skippedAlreadyArchived: skipped, failed: failures.count,
+            attempted: attempted, remaining: remaining, stoppedReason: stoppedReason,
+            dryRun: false, failures: failures)
+    }
+
     public func retryFailures(
         _ inputFailures: [CollectionSyncFailure],
         accountName: String? = nil,
@@ -917,6 +1041,7 @@ public actor CollectionSyncService {
             if Task.isCancelled {
                 remaining = failuresToRetry.count - index
                 stoppedReason = "Cancelled"
+                retryFailures.append(contentsOf: failuresToRetry[index...])
                 break
             }
             guard let sourceURL = failure.sourceURL, !sourceURL.isEmpty else {
@@ -954,12 +1079,16 @@ public actor CollectionSyncService {
             } catch is CancellationError {
                 remaining = failuresToRetry.count - index
                 stoppedReason = "Cancelled"
+                retryFailures.append(contentsOf: failuresToRetry[index...])
                 break
             } catch let error as GalleryDlError where Self.shouldStopXRequests(after: error) {
                 try persistCooldownIfNeeded(error, session: session, ownerID: ownerID)
                 retryFailures.append(syncFailure(for: stub, error: error))
                 remaining = failuresToRetry.count - index - 1
                 stoppedReason = error.localizedDescription
+                if index + 1 < failuresToRetry.count {
+                    retryFailures.append(contentsOf: failuresToRetry[(index + 1)...])
+                }
                 break
             } catch {
                 retryFailures.append(syncFailure(for: stub, error: error))
@@ -1184,6 +1313,15 @@ public actor CollectionSyncService {
                 outputPath: outputPath,
                 formatID: metadata.formatID
             )
+        } catch is CancellationError {
+            // A cancelled transfer has no usable output. Keep it eligible for the
+            // failure-retry flow instead of marking a durable failure in the archive.
+            try? await archive.record(
+                media: metadata,
+                collection: item.collectionName,
+                status: .discovered
+            )
+            throw CancellationError()
         } catch {
             try? await archive.record(
                 media: metadata,

@@ -447,6 +447,14 @@ final class CollectionViewModel: ObservableObject {
                 } else {
                     statusMessage = summary + englishExecutionNote(executionNote)
                 }
+            } catch CollectionPreviewError.expired {
+                // Do not silently replace a multi-page Preview with the ordinary
+                // one-page sync. The user should explicitly refresh the reviewed list.
+                errorMessage = text(
+                    "미리보기 시간이 지나 다운로드하지 않았습니다. 같은 항목을 확인한 뒤 다운로드할 수 있도록 새 미리보기를 시작해 주세요.",
+                    "Preview expired, so nothing was downloaded. Start a new Preview to review and download the same set of items."
+                )
+                statusMessage = ""
             } catch is CancellationError {
                 statusMessage = text("중지했습니다. 이미 완료된 다운로드 기록은 유지됩니다.", "Stopped. Completed downloads remain archived.")
             } catch {

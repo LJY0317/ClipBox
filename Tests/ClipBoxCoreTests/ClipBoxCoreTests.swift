@@ -156,7 +156,7 @@ final class ClipBoxCoreTests: XCTestCase {
         } catch is CancellationError { }
         XCTAssertTrue(FileManager.default.fileExists(atPath: partial.path))
         let record = try await store.record(identity: ArchiveIdentity(site: "youtube", mediaID: "cancel123"))
-        XCTAssertEqual(record?.status, .discovered)
+        XCTAssertEqual(record?.status, .downloading)
     }
 
     func testConsumedXPreviewDoesNotHideNewItemOnNextSync() async throws {
@@ -202,6 +202,127 @@ final class ClipBoxCoreTests: XCTestCase {
             identity: ArchiveIdentity(site: "twitter", mediaID: "9102")
         )
         XCTAssertTrue(newItemDownloaded)
+    }
+
+    func testNewServiceInstanceResumesFromArchiveWithoutDuplicateXDownload() async throws {
+        let temp = try makeTemporaryDirectory()
+        defer { try? FileManager.default.removeItem(at: temp) }
+        let state = temp.appendingPathComponent("restart-state")
+        try "old".write(to: state, atomically: true, encoding: .utf8)
+        let gallery = try makeFakeGalleryDl(in: temp, interpreterScript: """
+        #!/bin/sh
+        case "$2" in
+          *"user_by_rest_id"*) echo '{"connected":true,"cookieUserID":"424242","serverUserID":"424242","handle":"ExampleUser","serverVerified":true}'; exit 0 ;;
+        esac
+        if [ "$(cat '\(state.path)')" = "new" ]; then
+          cat <<'JSON'
+        [[3,"https://video.twimg.com/ext_tw_video/9301/old.mp4",{"tweet_id":8301,"author":{"id":424242,"name":"ExampleUser"},"type":"video","extension":"mp4"}],[3,"https://video.twimg.com/ext_tw_video/9302/new.mp4",{"tweet_id":8302,"author":{"id":424242,"name":"ExampleUser"},"type":"video","extension":"mp4"}]]
+        JSON
+        else
+          cat <<'JSON'
+        [[3,"https://video.twimg.com/ext_tw_video/9301/old.mp4",{"tweet_id":8301,"author":{"id":424242,"name":"ExampleUser"},"type":"video","extension":"mp4"}]]
+        JSON
+        fi
+        """)
+        let curl = temp.appendingPathComponent("curl")
+        try fakeCurlScript.write(to: curl, atomically: true, encoding: .utf8)
+        try FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: curl.path)
+        let database = temp.appendingPathComponent("archive.sqlite3")
+        let coord = temp.appendingPathComponent("coord")
+
+        let firstStore = try ArchiveStore(databaseURL: database)
+        let firstService = try CollectionSyncService(
+            archive: firstStore,
+            galleryDl: GalleryDlClient(executableURL: gallery),
+            directDownloader: DirectMediaDownloader(executableURL: curl),
+            xWorkDirectory: coord
+        )
+        let first = try await firstService.sync(
+            collections: [.xBookmarks], accountName: "ExampleUser",
+            cookiesFromBrowser: .chrome, outputDirectory: temp, limit: 50
+        )
+        XCTAssertEqual(first.downloaded, 1)
+
+        try "new".write(to: state, atomically: true, encoding: .utf8)
+        let restartedStore = try ArchiveStore(databaseURL: database)
+        let restartedService = try CollectionSyncService(
+            archive: restartedStore,
+            galleryDl: GalleryDlClient(executableURL: gallery),
+            directDownloader: DirectMediaDownloader(executableURL: curl),
+            xWorkDirectory: coord
+        )
+        let resumed = try await restartedService.sync(
+            collections: [.xBookmarks], accountName: "ExampleUser",
+            cookiesFromBrowser: .chrome, outputDirectory: temp, limit: 50
+        )
+        XCTAssertEqual(resumed.downloaded, 1)
+        XCTAssertEqual(resumed.skippedAlreadyArchived, 1)
+        let restartedCount = try await restartedStore.count()
+        XCTAssertEqual(restartedCount, 2)
+    }
+
+    func testRetryFailuresRetriesOnlyRemainingFailedItems() async throws {
+        let temp = try makeTemporaryDirectory()
+        defer { try? FileManager.default.removeItem(at: temp) }
+        let state = temp.appendingPathComponent("retry-state")
+        try "fail".write(to: state, atomically: true, encoding: .utf8)
+        let executable = temp.appendingPathComponent("yt-dlp")
+        let script = """
+        #!/bin/sh
+        case " $* " in
+          *" --dump-single-json "*"retry-ok"*)
+            echo '{"id":"retry-ok","display_id":"retry-ok","extractor_key":"Youtube","webpage_url":"https://www.youtube.com/watch?v=retry-ok","title":"Retry OK","format_id":"720","formats":[]}'
+            exit 0
+            ;;
+          *" --dump-single-json "*"retry-bad"*)
+            echo '{"id":"retry-bad","display_id":"retry-bad","extractor_key":"Youtube","webpage_url":"https://www.youtube.com/watch?v=retry-bad","title":"Retry Bad","format_id":"720","formats":[]}'
+            exit 0
+            ;;
+          *" --print "*"retry-ok"*)
+            echo "/tmp/retry-ok.mp4"
+            exit 0
+            ;;
+          *" --print "*"retry-bad"*)
+            if [ "$(cat '\(state.path)')" = "fail" ]; then
+              echo "synthetic first-attempt failure" >&2
+              exit 2
+            fi
+            echo "/tmp/retry-bad.mp4"
+            exit 0
+            ;;
+        esac
+        exit 2
+        """
+        try script.write(to: executable, atomically: true, encoding: .utf8)
+        try FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: executable.path)
+        let store = try ArchiveStore(databaseURL: temp.appendingPathComponent("archive.sqlite3"))
+        let service = try CollectionSyncService(archive: store, ytDlp: YtDlpClient(executableURL: executable))
+        let failures = [
+            CollectionSyncFailure(
+                site: "youtube", mediaID: "retry-ok", title: "Retry OK",
+                sourceURL: "https://www.youtube.com/watch?v=retry-ok", mediaType: .video, error: "previous failure"
+            ),
+            CollectionSyncFailure(
+                site: "youtube", mediaID: "retry-bad", title: "Retry Bad",
+                sourceURL: "https://www.youtube.com/watch?v=retry-bad", mediaType: .video, error: "previous failure"
+            )
+        ]
+        let partial = try await service.retryFailures(
+            failures, cookiesFromBrowser: .chrome, outputDirectory: temp
+        )
+        XCTAssertEqual(partial.downloaded, 1)
+        XCTAssertEqual(partial.failed, 1)
+        XCTAssertEqual(partial.failures.first?.mediaID, "retry-bad")
+        XCTAssertEqual(partial.failures.first?.sourceURL, "https://www.youtube.com/watch?v=retry-bad")
+
+        try "success".write(to: state, atomically: true, encoding: .utf8)
+        let retried = try await service.retryFailures(
+            partial.failures, cookiesFromBrowser: .chrome, outputDirectory: temp
+        )
+        XCTAssertEqual(retried.downloaded, 1)
+        XCTAssertEqual(retried.failed, 0)
+        let retriedCount = try await store.count()
+        XCTAssertEqual(retriedCount, 2)
     }
 
     func testXRefreshRateLimitStopsBeforeNextMediaRequest() async throws {
@@ -301,7 +422,9 @@ final class ClipBoxCoreTests: XCTestCase {
         let second = try await secondService.sync(collections: [.xBookmarks], accountName: "ExampleUser",
             cookiesFromBrowser: .chrome, outputDirectory: temp, limit: nil)
         XCTAssertEqual(second.downloaded, 2)
-        XCTAssertEqual(second.skippedAlreadyArchived, 1)
+        // The two interrupted items are resumed before the fresh history walk. The
+        // subsequent page correctly sees all three as already archived.
+        XCTAssertEqual(second.skippedAlreadyArchived, 3)
         let archiveCount = try await store.count()
         XCTAssertEqual(archiveCount, 3)
     }
@@ -321,6 +444,32 @@ final class ClipBoxCoreTests: XCTestCase {
         XCTAssertEqual(result.downloaded, 1)
         XCTAssertEqual(result.failed, 0)
         XCTAssertEqual(result.attempted, 1)
+    }
+
+    func testCancelledFailureRetryKeepsEveryUnattemptedItemRetryable() async throws {
+        let temp = try makeTemporaryDirectory()
+        defer { try? FileManager.default.removeItem(at: temp) }
+        let executable = temp.appendingPathComponent("yt-dlp")
+        try "#!/bin/sh\nexit 1\n".write(to: executable, atomically: true, encoding: .utf8)
+        try FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: executable.path)
+        let store = try ArchiveStore(databaseURL: temp.appendingPathComponent("archive.sqlite3"))
+        let service = try CollectionSyncService(archive: store, ytDlp: YtDlpClient(executableURL: executable))
+        let failures = ["one", "two", "three"].map {
+            CollectionSyncFailure(site: "youtube", mediaID: $0, title: $0,
+                sourceURL: "https://www.youtube.com/watch?v=\($0)", collectionName: "liked",
+                mediaType: .video, error: "synthetic failure")
+        }
+
+        let result = try await service.retryFailures(failures, cookiesFromBrowser: .chrome,
+            outputDirectory: temp, progress: { progress in
+                if progress.stage == .downloading && progress.completedItems == 0 {
+                    withUnsafeCurrentTask { $0?.cancel() }
+                }
+            })
+
+        XCTAssertEqual(result.stoppedReason, "Cancelled")
+        XCTAssertEqual(result.remaining, 3)
+        XCTAssertEqual(result.failures.map(\.mediaID), failures.map(\.mediaID))
     }
 
     func testPortableBackupRestoresHistoryIntoAnotherDatabaseByMerge() async throws {

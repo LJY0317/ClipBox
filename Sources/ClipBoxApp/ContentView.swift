@@ -106,6 +106,7 @@ struct ContentView: View {
     @StateObject private var collectionModel = CollectionViewModel()
     @StateObject private var privateAdapterModel = PrivateAdapterViewModel()
     @State private var selection: SidebarSection? = .download
+    @State private var showFullScanConfirmation = false
 
     private func observationRow(_ item: CollectionObservation) -> some View {
         HStack(alignment: .top, spacing: 8) {
@@ -599,9 +600,12 @@ struct ContentView: View {
                             }
                         }
 
-                        Toggle(language.text("전체 기록 확인", "Scan all available history"), isOn: $collectionModel.scanAll)
+                        Toggle(language.text("전체 기록 확인", "Scan all available history"), isOn: collectionScanAllBinding)
                         if collectionModel.scanAll {
-                            Text(language.text("처음 가져오거나 누락 여부를 점검할 때 사용하세요. 시간이 오래 걸릴 수 있습니다.", "Use this for the first import or an occasional completeness check. It can take a while."))
+                            Text(language.text(
+                                "전체 기록을 확인합니다. 시간이 오래 걸리거나 X에서 일시적으로 가져오기가 제한될 수 있으므로 자주 반복하지 않는 것을 권장합니다.",
+                                "ClipBox will check the full available history. This can take a long time, and X may temporarily limit imports, so avoid running it frequently."
+                            ))
                                 .font(.caption).foregroundStyle(.secondary)
                         }
 
@@ -634,11 +638,6 @@ struct ContentView: View {
                 Text(language.text("ClipBox는 선택한 브라우저의 로그인 상태를 사용하지만 쿠키나 세션 토큰을 별도로 저장하지 않습니다.", "ClipBox uses the selected browser login without exporting cookies or storing session tokens."))
                     .font(.caption)
                     .foregroundStyle(.secondary)
-
-                Text(language.text("전체 기록 확인은 처음 가져오거나 가끔 누락 여부를 점검할 때만 권장합니다.", "A full history scan is best reserved for the first import or an occasional completeness check."))
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-
 
                 if collectionModel.isXMode && !collectionModel.hasSelectedCollections {
                     Label(language.text("좋아요나 북마크를 하나 이상 선택해 주세요.", "Select Likes, Bookmarks, or both."), systemImage: "exclamationmark.triangle")
@@ -770,16 +769,73 @@ struct ContentView: View {
                     }
                 }
 
+                if collectionModel.isWorking, let progress = collectionModel.syncProgress {
+                    GroupBox(language.text("진행 상황", "Progress")) {
+                        VStack(alignment: .leading, spacing: 8) {
+                            HStack {
+                                Text(collectionProgressStage(progress.stage)).font(.headline)
+                                Spacer()
+                                if let total = progress.totalItems {
+                                    Text("\(progress.completedItems)/\(total)").monospacedDigit()
+                                } else if progress.completedItems > 0 {
+                                    Text("\(progress.completedItems)").monospacedDigit()
+                                }
+                            }
+                            if let total = progress.totalItems, total > 0 {
+                                ProgressView(value: Double(progress.completedItems), total: Double(total))
+                            } else {
+                                ProgressView()
+                            }
+                            Text(language.text(
+                                "다운로드 \(progress.downloaded) · 건너뜀 \(progress.skippedAlreadyArchived) · 실패 \(progress.failed)",
+                                "Downloaded \(progress.downloaded) · skipped \(progress.skippedAlreadyArchived) · failed \(progress.failed)"
+                            ))
+                                .font(.caption).foregroundStyle(.secondary)
+                            if let message = progress.message, !message.isEmpty {
+                                Text(message).font(.caption).foregroundStyle(.secondary)
+                            }
+                        }
+                        .padding(6)
+                    }
+                }
+
                 if let syncResult = collectionModel.syncResult {
                     GroupBox(language.text("마지막 다운로드", "Last Download")) {
-                        Grid(alignment: .leading, horizontalSpacing: 18, verticalSpacing: 6) {
-                            GridRow { Text(language.text("확인한 항목", "Checked items")).foregroundStyle(.secondary); Text("\(syncResult.scannedOccurrences)") }
-                            GridRow { Text(language.text("미디어", "Media")).foregroundStyle(.secondary); Text("\(syncResult.uniqueMedia)") }
-                            GridRow { Text(language.text("중복 정리", "Duplicates merged")).foregroundStyle(.secondary); Text("\(syncResult.duplicatesCollapsed)") }
-                            GridRow { Text(language.text("새 항목", "New items")).foregroundStyle(.secondary); Text("\(syncResult.unarchived)") }
-                            GridRow { Text(language.text("다운로드", "Downloaded")).foregroundStyle(.secondary); Text("\(syncResult.downloaded)") }
-                            GridRow { Text(language.text("건너뜀", "Skipped")).foregroundStyle(.secondary); Text("\(syncResult.skippedAlreadyArchived)") }
-                            GridRow { Text(language.text("실패", "Failed")).foregroundStyle(.secondary); Text("\(syncResult.failed)") }
+                        VStack(alignment: .leading, spacing: 10) {
+                            Grid(alignment: .leading, horizontalSpacing: 18, verticalSpacing: 6) {
+                                GridRow { Text(language.text("확인한 항목", "Checked items")).foregroundStyle(.secondary); Text("\(syncResult.scannedOccurrences)") }
+                                GridRow { Text(language.text("미디어", "Media")).foregroundStyle(.secondary); Text("\(syncResult.uniqueMedia)") }
+                                GridRow { Text(language.text("중복 정리", "Duplicates merged")).foregroundStyle(.secondary); Text("\(syncResult.duplicatesCollapsed)") }
+                                GridRow { Text(language.text("새 항목", "New items")).foregroundStyle(.secondary); Text("\(syncResult.unarchived)") }
+                                GridRow { Text(language.text("시도", "Attempted")).foregroundStyle(.secondary); Text("\(syncResult.attempted)") }
+                                GridRow { Text(language.text("다운로드", "Downloaded")).foregroundStyle(.secondary); Text("\(syncResult.downloaded)") }
+                                GridRow { Text(language.text("건너뜀", "Skipped")).foregroundStyle(.secondary); Text("\(syncResult.skippedAlreadyArchived)") }
+                                GridRow { Text(language.text("실패", "Failed")).foregroundStyle(.secondary); Text("\(syncResult.failed)") }
+                                if syncResult.remaining > 0 {
+                                    GridRow { Text(language.text("남은 항목", "Remaining loaded items")).foregroundStyle(.secondary); Text("\(syncResult.remaining)") }
+                                }
+                            }
+                            if let reason = syncResult.stoppedReason {
+                                Label(language.text("작업이 중단되었습니다: \(reason)", "Work stopped: \(reason)"), systemImage: "pause.circle")
+                                    .font(.caption).foregroundStyle(.secondary)
+                            }
+                            if !syncResult.failures.isEmpty {
+                                Divider()
+                                Text(language.text("실패한 항목", "Failed items")).font(.headline)
+                                ForEach(syncResult.failures) { failure in
+                                    VStack(alignment: .leading, spacing: 3) {
+                                        Text(failure.title ?? failure.mediaID).font(.callout)
+                                        Text(failure.error).font(.caption).foregroundStyle(.secondary).textSelection(.enabled)
+                                        if let value = failure.sourceURL, let url = URL(string: value), url.scheme == "https" {
+                                            Link(language.text("원문 열기", "Open original"), destination: url).font(.caption)
+                                        }
+                                    }
+                                }
+                                Button(language.text("실패 항목 다시 시도", "Retry Failed Items")) {
+                                    collectionModel.retryFailures()
+                                }
+                                .disabled(!collectionModel.canRetryFailures)
+                            }
                         }
                         .padding(6)
                     }
@@ -810,6 +866,30 @@ struct ContentView: View {
                 .background(.bar)
         }
         .navigationTitle(language.text("모음", "Collections"))
+        .alert(
+            language.text("전체 기록을 확인할까요?", "Check the full history?"),
+            isPresented: $showFullScanConfirmation
+        ) {
+            Button(language.text("취소", "Cancel"), role: .cancel) {}
+            Button(language.text("전체 기록 확인", "Check Full History")) {
+                collectionModel.scanAll = true
+            }
+        } message: {
+            Text(language.text(
+                "전체 기록 확인은 많은 항목을 연속해서 불러옵니다. 시간이 오래 걸릴 수 있고, X에서 일시적으로 가져오기가 제한될 수 있습니다. 처음 가져오거나 누락 여부를 점검할 때만 사용하고, 평소에는 조금씩 가져오는 것을 권장합니다.",
+                "A full-history check loads many items continuously. It can take a long time, and X may temporarily limit imports. Use it for a first import or an occasional completeness check; for everyday use, import a little at a time."
+            ))
+        }
+    }
+
+    private func collectionProgressStage(_ stage: CollectionSyncStage) -> String {
+        switch stage {
+        case .preparing: language.text("준비 중", "Preparing")
+        case .listing: language.text("목록 불러오는 중", "Loading list")
+        case .downloading: language.text("다운로드 중", "Downloading")
+        case .completed: language.text("완료", "Completed")
+        case .stopped: language.text("중단됨", "Stopped")
+        }
     }
 
     private var privateAdaptersView: some View {
@@ -1066,6 +1146,19 @@ struct ContentView: View {
         Binding(
             get: { collectionModel.selectedSource },
             set: { collectionModel.setSource($0) }
+        )
+    }
+
+    private var collectionScanAllBinding: Binding<Bool> {
+        Binding(
+            get: { collectionModel.scanAll },
+            set: { enabled in
+                if enabled && collectionModel.isXMode {
+                    showFullScanConfirmation = true
+                } else {
+                    collectionModel.scanAll = enabled
+                }
+            }
         )
     }
 
