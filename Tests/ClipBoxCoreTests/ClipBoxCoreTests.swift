@@ -789,6 +789,96 @@ final class ClipBoxCoreTests: XCTestCase {
         XCTAssertEqual(secondSync.skippedAlreadyArchived, 5)
     }
 
+    func testInstagramSavedImportsVideosOnlyAndSkipsSecondDownload() async throws {
+        let temp = try makeTemporaryDirectory()
+        defer { try? FileManager.default.removeItem(at: temp) }
+        let galleryCalls = temp.appendingPathComponent("instagram-gallery-calls")
+
+        let fakeGalleryDl = try makeFakeGalleryDl(in: temp, interpreterScript: """
+        #!/bin/sh
+        for input in "$@"; do
+          case "$input" in
+            *"instagram.com/me/saved"*)
+              echo scan >> '\(galleryCalls.path)'
+              cat <<'JSON'
+        [
+          [3,"https://cdn.example.invalid/video-9001.mp4",{"media_id":"9001","post_id":"7001","post_shortcode":"SavedVideoABC","post_url":"https://www.instagram.com/reel/SavedVideoABC/","description":"Saved example reel","username":"ExampleCreator","owner_id":"424242","date":"2026-09-20 10:00:00","type":"reel","extension":"mp4","display_url":"https://cdn.example.invalid/video-9001.jpg","width":1080,"height":1920}],
+          [3,"https://cdn.example.invalid/photo-9002.jpg",{"media_id":"9002","post_id":"7002","post_shortcode":"SavedPhotoABC","post_url":"https://www.instagram.com/p/SavedPhotoABC/","description":"Saved example photo","username":"ExampleCreator","owner_id":"424242","date":"2026-09-20 11:00:00","type":"post","extension":"jpg","display_url":"https://cdn.example.invalid/photo-9002.jpg","width":1080,"height":1080}]
+        ]
+        JSON
+              exit 0
+              ;;
+          esac
+        done
+        echo "unexpected gallery-dl input" >&2
+        exit 2
+        """)
+        let fakeCurl = temp.appendingPathComponent("curl")
+        try fakeCurlScript.write(to: fakeCurl, atomically: true, encoding: .utf8)
+        try FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: fakeCurl.path)
+
+        let store = try ArchiveStore(databaseURL: temp.appendingPathComponent("instagram.sqlite3"))
+        let service = try CollectionSyncService(
+            archive: store,
+            galleryDl: GalleryDlClient(executableURL: fakeGalleryDl),
+            directDownloader: DirectMediaDownloader(executableURL: fakeCurl)
+        )
+        let videosOnly = MediaTypeSelection(types: [.video])
+
+        let preview = try await service.scan(
+            collection: .instagramSaved,
+            cookiesFromBrowser: .chrome,
+            mediaTypes: videosOnly,
+            limit: 100
+        )
+        XCTAssertEqual(preview.items.count, 1)
+        XCTAssertEqual(preview.items.first?.item.site, "instagram")
+        XCTAssertEqual(preview.items.first?.item.collectionName, "saved")
+        XCTAssertEqual(preview.items.first?.item.mediaID, "9001")
+        XCTAssertEqual(preview.items.first?.item.sourceID, "7001")
+        XCTAssertEqual(preview.items.first?.item.mediaType, .video)
+        XCTAssertEqual(preview.items.first?.item.creator, "ExampleCreator")
+        XCTAssertEqual(
+            (try? String(contentsOf: galleryCalls, encoding: .utf8))?.split(separator: "\n").count,
+            1
+        )
+
+        let first = try await service.sync(
+            collection: .instagramSaved,
+            cookiesFromBrowser: .chrome,
+            outputDirectory: temp,
+            mediaTypes: videosOnly,
+            limit: 100
+        )
+        XCTAssertEqual(first.scanned, 1)
+        XCTAssertEqual(first.downloaded, 1)
+        XCTAssertEqual(first.failed, 0)
+        XCTAssertEqual(
+            (try? String(contentsOf: galleryCalls, encoding: .utf8))?.split(separator: "\n").count,
+            1,
+            "Preview→Sync should reuse the in-memory Instagram execution plan instead of listing Saved again"
+        )
+        let instagramDownloaded = try await store.downloaded(
+            identity: ArchiveIdentity(site: "instagram", mediaID: "9001")
+        )
+        XCTAssertTrue(instagramDownloaded)
+
+        let second = try await service.sync(
+            collection: .instagramSaved,
+            cookiesFromBrowser: .chrome,
+            outputDirectory: temp,
+            mediaTypes: videosOnly,
+            limit: 100
+        )
+        XCTAssertEqual(second.downloaded, 0)
+        XCTAssertEqual(second.skippedAlreadyArchived, 1)
+        XCTAssertEqual(
+            (try? String(contentsOf: galleryCalls, encoding: .utf8))?.split(separator: "\n").count,
+            2,
+            "A completed Sync consumes the plan so a later Sync can see newly saved items"
+        )
+    }
+
     func testXBatchSyncDeduplicatesLikesAndBookmarksButPreservesMemberships() async throws {
         let temp = try makeTemporaryDirectory()
         defer { try? FileManager.default.removeItem(at: temp) }

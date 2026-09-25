@@ -423,10 +423,18 @@ struct ContentView: View {
 
     @ViewBuilder
     private var sessionButtons: some View {
-        Button(language.text("브라우저에서 X 열기", "Open X in browser")) { collectionModel.openXLogin() }
-        Button(language.text("연결 확인", "Test connection")) { collectionModel.testSessions() }
+        if collectionModel.isInstagramMode {
+            Button(language.text("브라우저에서 Instagram 열기", "Open Instagram in browser")) {
+                collectionModel.openInstagramLogin()
+            }
+        } else {
+            Button(language.text("브라우저에서 X 열기", "Open X in browser")) { collectionModel.openXLogin() }
+            Button(language.text("연결 확인", "Test connection")) { collectionModel.testSessions() }
+        }
         Button(language.text("프로필 새로고침", "Refresh profiles")) { collectionModel.refreshSessions() }
-        Button(language.text("연결 정보 지우기", "Forget")) { collectionModel.forgetConnection() }
+        if collectionModel.isXMode {
+            Button(language.text("연결 정보 지우기", "Forget")) { collectionModel.forgetConnection() }
+        }
     }
 
     private var collectionActions: some View {
@@ -459,7 +467,7 @@ struct ContentView: View {
                     Text(language.text("저장한 미디어 가져오기", "Import saved media"))
                         .font(.largeTitle)
                         .fontWeight(.semibold)
-                    Text(language.text("X나 YouTube에 저장해 둔 항목을 미리 보고, ClipBox에 아직 없는 미디어만 다운로드합니다.", "Preview items you've saved on X or YouTube, then download only media that isn't already in ClipBox."))
+                    Text(language.text("X, Instagram, YouTube에 저장해 둔 항목을 미리 보고, ClipBox에 아직 없는 미디어만 다운로드합니다.", "Preview items you've saved on X, Instagram, or YouTube, then download only media that isn't already in ClipBox."))
                         .foregroundStyle(.secondary)
                 }
 
@@ -477,7 +485,7 @@ struct ContentView: View {
                                     Text(browser.displayName).tag(browser)
                                 }
                             }
-                            if collectionModel.isXMode {
+                            if collectionModel.usesGalleryBrowserSession {
                                 Group {
                                     Picker(language.text("프로필", "Profile"), selection: Binding(
                                         get: { collectionModel.browserProfile },
@@ -525,7 +533,9 @@ struct ContentView: View {
                                     }
                                 }
                                 if collectionModel.browser == .safari {
-                                    Text(language.text("X에 로그인한 Safari 프로필을 선택한 뒤 ‘연결 확인’을 눌러 주세요. 프로필 이름을 확인할 수 없는 경우에도 저장소 자체는 선택할 수 있습니다.", "Choose the Safari profile where you're signed in to X, then use Test connection. Stores without a confirmed profile name remain selectable."))
+                                    Text(collectionModel.isInstagramMode
+                                        ? language.text("Instagram에 로그인한 Safari 프로필을 선택해 주세요. 프로필 이름을 확인할 수 없는 경우에도 저장소 자체는 선택할 수 있습니다.", "Choose the Safari profile where you're signed in to Instagram. Stores without a confirmed profile name remain selectable.")
+                                        : language.text("X에 로그인한 Safari 프로필을 선택한 뒤 ‘연결 확인’을 눌러 주세요. 프로필 이름을 확인할 수 없는 경우에도 저장소 자체는 선택할 수 있습니다.", "Choose the Safari profile where you're signed in to X, then use Test connection. Stores without a confirmed profile name remain selectable."))
                                         .font(.caption).foregroundStyle(.secondary)
                                 }
                                 ForEach(collectionModel.discoveryIssues.filter { $0.browser == collectionModel.browser }) { issue in
@@ -562,12 +572,20 @@ struct ContentView: View {
                             }
                         }
 
-                        VStack(alignment: .leading, spacing: 8) {
-                            Text(language.text("미디어 종류", "Media types")).font(.subheadline).foregroundStyle(.secondary)
-                            LazyVGrid(columns: [GridItem(.adaptive(minimum: 145), alignment: .leading)], alignment: .leading) {
-                                ForEach(MediaAssetType.allCases) { type in
-                                    Toggle(mediaTypeName(type), isOn: mediaTypeBinding(type))
-                                        .toggleStyle(.checkbox).fixedSize(horizontal: true, vertical: false)
+                        if collectionModel.isInstagramMode {
+                            VStack(alignment: .leading, spacing: 4) {
+                                Text(language.text("가져올 미디어", "Media to import")).font(.subheadline).foregroundStyle(.secondary)
+                                Text(language.text("Instagram 저장됨에서 동영상과 Reels만 가져옵니다. 사진은 건너뜁니다.", "ClipBox imports videos and Reels from Instagram Saved and skips photos."))
+                                    .font(.caption).foregroundStyle(.secondary)
+                            }
+                        } else {
+                            VStack(alignment: .leading, spacing: 8) {
+                                Text(language.text("미디어 종류", "Media types")).font(.subheadline).foregroundStyle(.secondary)
+                                LazyVGrid(columns: [GridItem(.adaptive(minimum: 145), alignment: .leading)], alignment: .leading) {
+                                    ForEach(MediaAssetType.allCases) { type in
+                                        Toggle(mediaTypeName(type), isOn: mediaTypeBinding(type))
+                                            .toggleStyle(.checkbox).fixedSize(horizontal: true, vertical: false)
+                                    }
                                 }
                             }
                         }
@@ -602,10 +620,15 @@ struct ContentView: View {
 
                         Toggle(language.text("전체 기록 확인", "Scan all available history"), isOn: collectionScanAllBinding)
                         if collectionModel.scanAll {
-                            Text(language.text(
-                                "전체 기록을 확인합니다. 시간이 오래 걸리거나 X에서 일시적으로 가져오기가 제한될 수 있으므로 자주 반복하지 않는 것을 권장합니다.",
-                                "ClipBox will check the full available history. This can take a long time, and X may temporarily limit imports, so avoid running it frequently."
-                            ))
+                            Text(collectionModel.isInstagramMode
+                                ? language.text(
+                                    "Instagram의 저장된 기록을 연속해서 확인합니다. 시간이 오래 걸리거나 Instagram에서 일시적으로 요청을 제한할 수 있으므로 자주 반복하지 않는 것을 권장합니다.",
+                                    "ClipBox will check the full Instagram Saved history. This can take a long time, and Instagram may temporarily limit requests, so avoid running it frequently."
+                                )
+                                : language.text(
+                                    "전체 기록을 확인합니다. 시간이 오래 걸리거나 X에서 일시적으로 가져오기가 제한될 수 있으므로 자주 반복하지 않는 것을 권장합니다.",
+                                    "ClipBox will check the full available history. This can take a long time, and X may temporarily limit imports, so avoid running it frequently."
+                                ))
                                 .font(.caption).foregroundStyle(.secondary)
                         }
 
@@ -875,10 +898,15 @@ struct ContentView: View {
                 collectionModel.scanAll = true
             }
         } message: {
-            Text(language.text(
-                "전체 기록 확인은 많은 항목을 연속해서 불러옵니다. 시간이 오래 걸릴 수 있고, X에서 일시적으로 가져오기가 제한될 수 있습니다. 처음 가져오거나 누락 여부를 점검할 때만 사용하고, 평소에는 조금씩 가져오는 것을 권장합니다.",
-                "A full-history check loads many items continuously. It can take a long time, and X may temporarily limit imports. Use it for a first import or an occasional completeness check; for everyday use, import a little at a time."
-            ))
+            Text(collectionModel.isInstagramMode
+                ? language.text(
+                    "전체 기록 확인은 Instagram의 저장된 항목을 연속해서 불러옵니다. 시간이 오래 걸릴 수 있고, Instagram에서 일시적으로 요청을 제한할 수 있습니다. 처음 가져오거나 누락 여부를 점검할 때만 사용하는 것을 권장합니다.",
+                    "A full-history check loads Instagram Saved items continuously. It can take a long time, and Instagram may temporarily limit requests. Use it mainly for a first import or an occasional completeness check."
+                )
+                : language.text(
+                    "전체 기록 확인은 많은 항목을 연속해서 불러옵니다. 시간이 오래 걸릴 수 있고, X에서 일시적으로 가져오기가 제한될 수 있습니다. 처음 가져오거나 누락 여부를 점검할 때만 사용하고, 평소에는 조금씩 가져오는 것을 권장합니다.",
+                    "A full-history check loads many items continuously. It can take a long time, and X may temporarily limit imports. Use it for a first import or an occasional completeness check; for everyday use, import a little at a time."
+                ))
         }
     }
 
@@ -1153,7 +1181,7 @@ struct ContentView: View {
         Binding(
             get: { collectionModel.scanAll },
             set: { enabled in
-                if enabled && collectionModel.isXMode {
+                if enabled && collectionModel.usesGalleryBrowserSession {
                     showFullScanConfirmation = true
                 } else {
                     collectionModel.scanAll = enabled
@@ -1181,6 +1209,7 @@ struct ContentView: View {
             switch collection {
             case .xLikes: language.text("좋아요", "Likes")
             case .xBookmarks: language.text("북마크", "Bookmarks")
+            case .instagramSaved: language.text("Instagram 저장됨", "Instagram Saved")
             case .youtubeLiked: language.text("YouTube 좋아요", "YouTube Likes")
             case .youtubeWatchLater: language.text("나중에 볼 동영상", "Watch Later")
             }
@@ -1204,6 +1233,7 @@ struct ContentView: View {
     private func collectionSourceName(_ source: CollectionSourceMode) -> String {
         switch source {
         case .xCollections: language.text("X 좋아요 · 북마크", "X Likes & Bookmarks")
+        case .instagramSaved: language.text("Instagram 저장됨 동영상", "Instagram Saved Videos")
         case .youtubeLiked: language.text("YouTube 좋아요 표시한 동영상", "YouTube Liked Videos")
         case .youtubeWatchLater: language.text("YouTube 나중에 볼 동영상", "YouTube Watch Later")
         }
@@ -1221,6 +1251,7 @@ struct ContentView: View {
         switch collection {
         case .xLikes: language.text("X 좋아요", "X Likes")
         case .xBookmarks: language.text("X 북마크", "X Bookmarks")
+        case .instagramSaved: language.text("Instagram 저장됨", "Instagram Saved")
         case .youtubeLiked: language.text("YouTube 좋아요", "YouTube Likes")
         case .youtubeWatchLater: language.text("YouTube 나중에 볼 동영상", "YouTube Watch Later")
         }

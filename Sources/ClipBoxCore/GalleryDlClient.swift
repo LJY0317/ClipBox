@@ -49,7 +49,7 @@ public enum GalleryDlError: Error, LocalizedError, Sendable {
                 "Could not decrypt \(browser.displayName)'s cookies. Check the selected profile and the macOS Keychain prompt."
             }
         case .scanFailed(let message):
-            "Could not read the X collection: \(message)"
+            "Could not read the collection: \(message)"
         case .malformedOutput(let message):
             "gallery-dl returned data ClipBox could not understand: \(message)"
         }
@@ -79,9 +79,92 @@ public actor GalleryDlClient {
         mediaTypes: MediaTypeSelection = .defaultSelection,
         limit: Int? = 100
     ) async throws -> [CollectionItem] {
-        try await scanCollections([collection], accountName: accountName,
+        if collection == .instagramSaved {
+            return try await scanInstagramSaved(
+                collection,
+                cookiesFromBrowser: cookiesFromBrowser,
+                browserProfile: browserProfile,
+                browserContainer: browserContainer,
+                mediaTypes: mediaTypes,
+                limit: limit
+            )
+        }
+        return try await scanCollections([collection], accountName: accountName,
             cookiesFromBrowser: cookiesFromBrowser, browserProfile: browserProfile,
             browserContainer: browserContainer, mediaTypes: mediaTypes, limit: limit)[collection] ?? []
+    }
+
+    private func scanInstagramSaved(
+        _ collection: BuiltInCollection,
+        cookiesFromBrowser: BrowserCookieSource,
+        browserProfile: String?,
+        browserContainer: String?,
+        mediaTypes: MediaTypeSelection,
+        limit: Int?
+    ) async throws -> [CollectionItem] {
+        guard collection == .instagramSaved, let executableURL else {
+            throw GalleryDlError.unavailable
+        }
+        guard let url = collection.collectionURL(accountName: nil) else {
+            throw GalleryDlError.unsupportedCollection(collection.displayName)
+        }
+
+        lastDiagnostics = []
+        let interpreter = GalleryBridge.interpreter(for: executableURL)
+        let safariStore = cookiesFromBrowser == .safari ? browserProfile : nil
+        if safariStore != nil, interpreter == nil {
+            throw GalleryDlError.unsupportedSession(
+                "Selecting a Safari store for Instagram requires a Python-based gallery-dl installation (such as Homebrew)."
+            )
+        }
+        let session = BrowserSession(
+            browser: cookiesFromBrowser,
+            profile: cookiesFromBrowser == .safari ? nil : browserProfile,
+            container: browserContainer
+        )
+        var arguments = [
+            "--config-ignore", "--no-input", "--no-colors", "--no-postprocessors",
+            "--dump-json",
+            "-o", try session.galleryCookieOption(extractor: "instagram", cookieDomain: ".instagram.com"),
+            "-o", "extractor.cookies-update=false",
+            "-o", "cache.file=null",
+            "--retries", "2", "--http-timeout", "30",
+        ]
+        if let limit, limit > 0 {
+            arguments.append(contentsOf: ["--post-range", "1-\(limit)"])
+        }
+        arguments.append(url)
+
+        let result = try await ProcessRunner.runAsync(
+            executable: interpreter ?? executableURL,
+            arguments: interpreter == nil ? arguments : ["-c", GalleryBridge.script, safariStore ?? ""] + arguments,
+            timeout: limit == nil ? 21_600 : 300
+        )
+        if let failure = Self.classifyError(result.stderr, browser: cookiesFromBrowser),
+           case .browserCookieAccessFailed = failure {
+            throw failure
+        }
+        if Self.instagramAuthenticationFailed(result.stderr) {
+            throw GalleryDlError.scanFailed(
+                "Instagram requires a usable signed-in browser session. Sign in to Instagram in the selected browser profile, then try again."
+            )
+        }
+        guard result.exitCode == 0 else {
+            throw GalleryDlError.scanFailed(
+                "Instagram Saved could not be read. Check the selected browser session and gallery-dl version, then retry."
+            )
+        }
+        let frames = try Self.jsonFrames(result.stdout)
+        guard frames.count == 1,
+              let messages = try JSONSerialization.jsonObject(with: frames[0]) as? [Any] else {
+            throw GalleryDlError.malformedOutput("Instagram Saved response was not a single JSON array")
+        }
+        return try parseMessages(
+            messages,
+            collection: collection,
+            cookiesFromBrowser: cookiesFromBrowser,
+            mediaTypes: mediaTypes
+        )
     }
 
     public func scanCollections(
@@ -192,7 +275,7 @@ public actor GalleryDlClient {
             switch collection {
             case .xLikes: cursorPayload["Likes"] = cursor
             case .xBookmarks: cursorPayload["Bookmarks"] = cursor
-            case .youtubeLiked, .youtubeWatchLater: break
+            case .youtubeLiked, .youtubeWatchLater, .instagramSaved: break
             }
         }
         var bridgeInput: [String: Any] = ["pageMode": true, "cursors": cursorPayload]
@@ -276,6 +359,14 @@ public actor GalleryDlClient {
         cookiesFromBrowser: BrowserCookieSource,
         mediaTypes: MediaTypeSelection
     ) throws -> [CollectionItem] {
+        if collection == .instagramSaved {
+            return try parseInstagramSavedMessages(
+                messages,
+                collection: collection,
+                cookiesFromBrowser: cookiesFromBrowser,
+                mediaTypes: mediaTypes
+            )
+        }
         var items: [CollectionItem] = []
         var seenMediaIDs = Set<String>()
 
@@ -353,6 +444,72 @@ public actor GalleryDlClient {
             items[items.count - 1].bookmarkedAt = Self.string(metadata["date_bookmarked"])
         }
 
+        return items
+    }
+
+    private func parseInstagramSavedMessages(
+        _ messages: [Any],
+        collection: BuiltInCollection,
+        cookiesFromBrowser: BrowserCookieSource,
+        mediaTypes: MediaTypeSelection
+    ) throws -> [CollectionItem] {
+        guard mediaTypes.contains(.video) else { return [] }
+        var items: [CollectionItem] = []
+        var seenMediaIDs = Set<String>()
+
+        for rawMessage in messages {
+            guard let message = rawMessage as? [Any],
+                  let messageCode = Self.int(message.first) else {
+                continue
+            }
+            if messageCode == -1 {
+                let metadata = message.count > 1 ? message[1] as? [String: Any] : nil
+                let errorName = Self.string(metadata?["error"]) ?? "ExtractionError"
+                let detail = Self.string(metadata?["message"]) ?? ""
+                if errorName.lowercased().contains("auth") || Self.instagramAuthenticationFailed(detail) {
+                    throw GalleryDlError.scanFailed(
+                        "Instagram requires a usable signed-in \(cookiesFromBrowser.displayName) session."
+                    )
+                }
+                throw GalleryDlError.scanFailed(
+                    "Instagram returned an extraction error. Check for a gallery-dl update and retry. Raw server responses are omitted for privacy."
+                )
+            }
+            guard messageCode == 3,
+                  message.count >= 3,
+                  let directURL = message[1] as? String,
+                  let metadata = message[2] as? [String: Any],
+                  Self.mediaType(metadata: metadata, directURL: directURL) == .video,
+                  let mediaID = Self.string(metadata["media_id"]),
+                  !mediaID.isEmpty,
+                  seenMediaIDs.insert(mediaID).inserted else {
+                continue
+            }
+
+            let postID = Self.string(metadata["post_id"]) ?? Self.string(metadata["post_shortcode"]) ?? mediaID
+            let shortcode = Self.string(metadata["post_shortcode"]) ?? Self.string(metadata["shortcode"])
+            let sourceURL = Self.string(metadata["post_url"])
+                ?? shortcode.map { "https://www.instagram.com/p/\($0)/" }
+                ?? "https://www.instagram.com/"
+            items.append(CollectionItem(
+                site: collection.site,
+                collectionName: collection.collectionName,
+                mediaID: mediaID,
+                sourceID: postID,
+                sourceURL: sourceURL,
+                title: Self.string(metadata["description"]),
+                creator: Self.string(metadata["username"]),
+                creatorID: Self.string(metadata["owner_id"]),
+                publishedAt: Self.string(metadata["date"]) ?? Self.string(metadata["post_date"]),
+                thumbnailURL: Self.string(metadata["display_url"]),
+                mediaType: .video,
+                directMediaURL: directURL,
+                extensionName: Self.extensionName(metadata: metadata, directURL: directURL, mediaType: .video),
+                width: Self.int(metadata["width"]),
+                height: Self.int(metadata["height"]),
+                bitrate: Self.double(metadata["bitrate"])
+            ))
+        }
         return items
     }
 
@@ -475,7 +632,7 @@ public actor GalleryDlClient {
         session: BrowserSession,
         mediaTypes: MediaTypeSelection = .defaultSelection
     ) async throws -> CollectionItem? {
-        guard item.site == "twitter", let executableURL else { return nil }
+        guard ["twitter", "instagram"].contains(item.site), let executableURL else { return nil }
         let interpreter = GalleryBridge.interpreter(for: executableURL)
         let safariStore = session.browser == .safari ? session.profile : nil
         if safariStore != nil, interpreter == nil {
@@ -483,19 +640,30 @@ public actor GalleryDlClient {
         }
         let cookieSession = BrowserSession(browser: session.browser,
             profile: session.browser == .safari ? nil : session.profile, container: session.container)
-        let collection = BuiltInCollection.resolve(site: "x", collection: item.collectionName) ?? .xBookmarks
-        let arguments = [
+        let isInstagram = item.site == "instagram"
+        let collection = isInstagram
+            ? BuiltInCollection.instagramSaved
+            : (BuiltInCollection.resolve(site: "x", collection: item.collectionName) ?? .xBookmarks)
+        var arguments = [
             "--config-ignore", "--no-input", "--no-colors", "--no-postprocessors", "--dump-json",
-            "-o", try cookieSession.galleryCookieOption(), "-o", "extractor.cookies-update=false",
-            "-o", "cache.file=null", "-o", "extractor.twitter.ratelimit=abort",
-            "-o", "extractor.twitter.retries-api=1", "--retries", "1", "--http-timeout", "30",
-            item.sourceURL,
+            "-o", try cookieSession.galleryCookieOption(
+                extractor: isInstagram ? "instagram" : "twitter",
+                cookieDomain: isInstagram ? ".instagram.com" : ".x.com"
+            ),
+            "-o", "extractor.cookies-update=false", "-o", "cache.file=null",
         ]
+        if !isInstagram {
+            arguments.append(contentsOf: [
+                "-o", "extractor.twitter.ratelimit=abort",
+                "-o", "extractor.twitter.retries-api=1",
+            ])
+        }
+        arguments.append(contentsOf: ["--retries", "1", "--http-timeout", "30", item.sourceURL])
         let result = try await ProcessRunner.runAsync(executable: interpreter ?? executableURL,
             arguments: interpreter == nil ? arguments : ["-c", GalleryBridge.script, safariStore ?? ""] + arguments,
             timeout: 90)
         guard result.exitCode == 0 else {
-            if let failure = Self.classifyError(result.stderr, browser: session.browser) { throw failure }
+            if !isInstagram, let failure = Self.classifyError(result.stderr, browser: session.browser) { throw failure }
             return nil
         }
         let frames = try Self.jsonFrames(result.stdout)
@@ -504,6 +672,15 @@ public actor GalleryDlClient {
         let refreshed = try parseMessages(messages, collection: collection,
             cookiesFromBrowser: session.browser, mediaTypes: mediaTypes)
         return refreshed.first { $0.mediaID == item.mediaID }
+    }
+
+    private static func instagramAuthenticationFailed(_ text: String) -> Bool {
+        let message = text.lowercased()
+        return message.contains("authrequired")
+            || message.contains("authenticated cookies")
+            || message.contains("login_required")
+            || message.contains("login required")
+            || message.contains("accounts/login")
     }
 
     public func checkSession(_ session: BrowserSession, accountName: String? = nil) async throws -> BrowserSessionCheck {

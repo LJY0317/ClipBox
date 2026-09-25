@@ -712,6 +712,8 @@ struct ClipBoxCommand {
         print("  clipbox scan x likes --username <handle> [--media-types videos,photos,animated] [--browser chrome] [--limit <n>|--all] [--json]")
         print("  clipbox scan x all --username <handle> [--media-types videos,photos,animated] [--browser chrome] [--limit <n>|--all] [--json]")
         print("  clipbox sync x <bookmarks|likes|all> [--username <handle>] [--media-types videos,photos,animated] [--browser chrome] [--limit <n>|--all] [--dry-run] [--output <folder>] [--json]")
+        print("  clipbox scan instagram saved [--browser chrome] [--profile <name>] [--limit <n>|--all] [--json]")
+        print("  clipbox sync instagram saved [--browser chrome] [--profile <name>] [--limit <n>|--all] [--dry-run] [--output <folder>] [--json]")
         print("  clipbox history [--limit <n>] [--json]")
         print("  clipbox history export <file.{jsonl|csv|xlsx}> [--format <format>] [--json]")
         print("  clipbox history import <file.{jsonl|csv}> [--format <format>] [--json]")
@@ -765,7 +767,7 @@ struct ClipBoxCommand {
     ) throws -> CollectionCommandOptions {
         guard arguments.count >= 2 else {
             throw CLIError.missingArgument(
-                "Collection must be `youtube liked`, `youtube watch-later`, `x bookmarks`, `x likes`, or `x all`."
+                "Collection must be `youtube liked`, `youtube watch-later`, `x bookmarks`, `x likes`, `x all`, or `instagram saved`."
             )
         }
 
@@ -781,7 +783,7 @@ struct ClipBoxCommand {
             collections = [collection]
         } else {
             throw CLIError.missingArgument(
-                "Collection must be `youtube liked`, `youtube watch-later`, `x bookmarks`, `x likes`, or `x all`."
+                "Collection must be `youtube liked`, `youtube watch-later`, `x bookmarks`, `x likes`, `x all`, or `instagram saved`."
             )
         }
 
@@ -794,8 +796,8 @@ struct ClipBoxCommand {
         }
         let profile = try removeOption("--profile", from: &remaining)
         let container = try removeOption("--container", from: &remaining)
-        if collections.contains(where: { $0.site != "twitter" }), profile != nil || container != nil {
-            throw CLIError.invalidArgument("--profile and --container currently apply to X collections only.")
+        if collections.contains(where: { !["twitter", "instagram"].contains($0.site) }), profile != nil || container != nil {
+            throw CLIError.invalidArgument("--profile and --container apply to browser-backed X and Instagram collections only.")
         }
         let rawLimit = try removeOption("--limit", from: &remaining)
         let accountName = try removeOption("--username", from: &remaining)

@@ -6,6 +6,7 @@ import OSLog
 
 enum CollectionSourceMode: String, CaseIterable, Identifiable {
     case xCollections
+    case instagramSaved
     case youtubeLiked
     case youtubeWatchLater
 
@@ -14,6 +15,7 @@ enum CollectionSourceMode: String, CaseIterable, Identifiable {
     var displayName: String {
         switch self {
         case .xCollections: "X Collections"
+        case .instagramSaved: "Instagram Saved Videos"
         case .youtubeLiked: "YouTube Liked Videos"
         case .youtubeWatchLater: "YouTube Watch Later"
         }
@@ -153,6 +155,8 @@ final class CollectionViewModel: ObservableObject {
             if xLikesEnabled { collections.append(.xLikes) }
             if xBookmarksEnabled { collections.append(.xBookmarks) }
             return collections
+        case .instagramSaved:
+            return [.instagramSaved]
         case .youtubeLiked:
             return [.youtubeLiked]
         case .youtubeWatchLater:
@@ -162,6 +166,18 @@ final class CollectionViewModel: ObservableObject {
 
     var isXMode: Bool {
         selectedSource == .xCollections
+    }
+
+    var isInstagramMode: Bool {
+        selectedSource == .instagramSaved
+    }
+
+    var usesGalleryBrowserSession: Bool {
+        isXMode || isInstagramMode
+    }
+
+    var effectiveMediaTypes: MediaTypeSelection {
+        isInstagramMode ? MediaTypeSelection(types: [.video]) : mediaTypes
     }
 
     var requiresXAccountName: Bool {
@@ -177,7 +193,7 @@ final class CollectionViewModel: ObservableObject {
     }
 
     var hasSelectedMediaTypes: Bool {
-        !mediaTypes.isEmpty
+        !effectiveMediaTypes.isEmpty
     }
 
     var canRun: Bool {
@@ -192,6 +208,7 @@ final class CollectionViewModel: ObservableObject {
 
     func setSource(_ source: CollectionSourceMode) {
         selectedSource = source
+        sessionChecks = []
         clearResults()
     }
 
@@ -199,7 +216,7 @@ final class CollectionViewModel: ObservableObject {
         switch collection {
         case .xLikes: xLikesEnabled
         case .xBookmarks: xBookmarksEnabled
-        case .youtubeLiked, .youtubeWatchLater: false
+        case .youtubeLiked, .youtubeWatchLater, .instagramSaved: false
         }
     }
 
@@ -209,7 +226,7 @@ final class CollectionViewModel: ObservableObject {
             xLikesEnabled = enabled
         case .xBookmarks:
             xBookmarksEnabled = enabled
-        case .youtubeLiked, .youtubeWatchLater:
+        case .youtubeLiked, .youtubeWatchLater, .instagramSaved:
             return
         }
         clearResults()
@@ -258,12 +275,12 @@ final class CollectionViewModel: ObservableObject {
         errorMessage = nil
         syncResult = nil
         statusMessage = text("\(sourceName(selectedSource))을 확인하는 중…", "Reading \(selectedSource.displayName)…")
-            + (scanAll ? text(" X의 요청 제한이 풀릴 때까지 잠시 기다릴 수 있으며 언제든 중지할 수 있습니다.", " Full scans may pause until X rate limits reset; you can stop at any time.") : "")
+            + fullScanStatusSuffix
 
         let collections = selectedCollections
         let browser = browser
         let accountName = normalizedXAccountName
-        let mediaTypes = mediaTypes
+        let mediaTypes = effectiveMediaTypes
         let limit = effectiveLimit
         let session = selectedSession
         workTask = Task {
@@ -287,8 +304,8 @@ final class CollectionViewModel: ObservableObject {
                         collections: collections,
                         accountName: accountName,
                         cookiesFromBrowser: browser,
-                        browserProfile: isXMode ? session.profile : nil,
-                        browserContainer: isXMode ? session.container : nil,
+                        browserProfile: usesGalleryBrowserSession ? session.profile : nil,
+                        browserContainer: usesGalleryBrowserSession ? session.container : nil,
                         mediaTypes: mediaTypes,
                         limit: limit
                     )
@@ -329,7 +346,7 @@ final class CollectionViewModel: ObservableObject {
         let collection = previewCollection
         let browser = browser
         let accountName = normalizedXAccountName
-        let mediaTypes = mediaTypes
+        let mediaTypes = effectiveMediaTypes
         let session = selectedSession
         isWorking = true
         errorMessage = nil
@@ -392,12 +409,12 @@ final class CollectionViewModel: ObservableObject {
         syncProgress = CollectionSyncProgress(stage: .preparing)
         errorMessage = nil
         statusMessage = text("\(sourceName(selectedSource))에서 새 항목을 다운로드하는 중…", "Synchronizing \(selectedSource.displayName)…")
-            + (scanAll ? text(" X의 요청 제한이 풀릴 때까지 잠시 기다릴 수 있으며 언제든 중지할 수 있습니다.", " Full scans may pause until X rate limits reset; you can stop at any time.") : "")
+            + fullScanStatusSuffix
 
         let collections = selectedCollections
         let browser = browser
         let accountName = normalizedXAccountName
-        let mediaTypes = mediaTypes
+        let mediaTypes = effectiveMediaTypes
         let limit = effectiveLimit
         let outputDirectory = outputDirectory
         let session = selectedSession
@@ -424,8 +441,8 @@ final class CollectionViewModel: ObservableObject {
                         collections: collections,
                         accountName: accountName,
                         cookiesFromBrowser: browser,
-                        browserProfile: isXMode ? session.profile : nil,
-                        browserContainer: isXMode ? session.container : nil,
+                        browserProfile: usesGalleryBrowserSession ? session.profile : nil,
+                        browserContainer: usesGalleryBrowserSession ? session.container : nil,
                         outputDirectory: outputDirectory,
                         mediaTypes: mediaTypes,
                         limit: limit,
@@ -478,7 +495,7 @@ final class CollectionViewModel: ObservableObject {
         let failures = previous.failures
         let session = selectedSession
         let outputDirectory = outputDirectory
-        let mediaTypes = mediaTypes
+        let mediaTypes = effectiveMediaTypes
         let browser = browser
         let accountName = normalizedXAccountName
         let updateProgress: CollectionSyncProgressHandler = { [weak self] value in
@@ -549,6 +566,26 @@ final class CollectionViewModel: ObservableObject {
     }
 
     func openXLogin() {
+        openLoginURL(
+            "https://x.com/i/bookmarks",
+            koreanInstruction: "브라우저에서 X에 로그인한 뒤 ClipBox로 돌아와 ‘연결 확인’을 눌러 주세요.",
+            englishInstruction: "Sign in to X in the browser, return to ClipBox, then test the connection."
+        )
+    }
+
+    func openInstagramLogin() {
+        openLoginURL(
+            "https://www.instagram.com/",
+            koreanInstruction: "브라우저에서 Instagram에 로그인한 뒤 ClipBox로 돌아와 미리보기를 실행해 주세요.",
+            englishInstruction: "Sign in to Instagram in the browser, return to ClipBox, then run Preview."
+        )
+    }
+
+    private func openLoginURL(
+        _ urlString: String,
+        koreanInstruction: String,
+        englishInstruction: String
+    ) {
         let identifiers: [BrowserCookieSource: String] = [
             .chrome: "com.google.Chrome", .firefox: "org.mozilla.firefox", .brave: "com.brave.Browser",
             .safari: "com.apple.Safari", .edge: "com.microsoft.edgemac", .chromium: "org.chromium.Chromium"
@@ -558,12 +595,10 @@ final class CollectionViewModel: ObservableObject {
             errorMessage = text("선택한 브라우저가 설치되어 있지 않습니다. 다른 브라우저를 선택해 주세요.", "The selected browser is not installed. Choose another browser.")
             return
         }
-        NSWorkspace.shared.open([URL(string: "https://x.com/i/bookmarks")!], withApplicationAt: application,
+        guard let url = URL(string: urlString) else { return }
+        NSWorkspace.shared.open([url], withApplicationAt: application,
             configuration: NSWorkspace.OpenConfiguration())
-        statusMessage = text(
-            "브라우저에서 X에 로그인한 뒤 ClipBox로 돌아와 ‘연결 확인’을 눌러 주세요.",
-            "Sign in to X in the browser, return to ClipBox, then test the connection."
-        )
+        statusMessage = text(koreanInstruction, englishInstruction)
     }
 
     func refreshSessions() {
@@ -673,9 +708,27 @@ final class CollectionViewModel: ObservableObject {
         AppLanguageStore.shared.language == .english && !note.isEmpty ? " \(note)" : ""
     }
 
+    private var fullScanStatusSuffix: String {
+        guard scanAll else { return "" }
+        if isXMode {
+            return text(
+                " X의 요청 제한이 풀릴 때까지 잠시 기다릴 수 있으며 언제든 중지할 수 있습니다.",
+                " Full scans may pause until X rate limits reset; you can stop at any time."
+            )
+        }
+        if isInstagramMode {
+            return text(
+                " 시간이 오래 걸리거나 Instagram에서 요청을 제한할 수 있으며 언제든 중지할 수 있습니다.",
+                " Full scans can take a long time or be temporarily limited by Instagram; you can stop at any time."
+            )
+        }
+        return text(" 시간이 오래 걸릴 수 있으며 언제든 중지할 수 있습니다.", " Full scans can take a long time; you can stop at any time.")
+    }
+
     private func sourceName(_ source: CollectionSourceMode) -> String {
         switch source {
         case .xCollections: text("X 좋아요 · 북마크", "X Collections")
+        case .instagramSaved: text("Instagram 저장됨 동영상", "Instagram Saved Videos")
         case .youtubeLiked: text("YouTube 좋아요 표시한 동영상", "YouTube Liked Videos")
         case .youtubeWatchLater: text("YouTube 나중에 볼 동영상", "YouTube Watch Later")
         }
@@ -685,6 +738,7 @@ final class CollectionViewModel: ObservableObject {
         switch collection {
         case .xLikes: text("X 좋아요", "X Likes")
         case .xBookmarks: text("X 북마크", "X Bookmarks")
+        case .instagramSaved: text("Instagram 저장됨", "Instagram Saved")
         case .youtubeLiked: text("YouTube 좋아요", "YouTube Likes")
         case .youtubeWatchLater: text("YouTube 나중에 볼 동영상", "YouTube Watch Later")
         }

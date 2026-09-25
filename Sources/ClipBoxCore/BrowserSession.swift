@@ -24,16 +24,19 @@ public struct BrowserSession: Codable, Equatable, Hashable, Sendable, Identifiab
         self.container = container?.isEmpty == false ? container : nil
     }
 
-    func galleryCookieOption() throws -> String {
+    func galleryCookieOption(
+        extractor: String = "twitter",
+        cookieDomain: String = ".x.com"
+    ) throws -> String {
         if browser == .safari, profile != nil || container != nil {
             throw GalleryDlError.unsupportedSession("gallery-dl cannot select Safari profiles. Use Chrome, Firefox or Brave for a specific profile.")
         }
         if container != nil, browser != .firefox {
             throw GalleryDlError.unsupportedSession("Container selection is available only for Firefox.")
         }
-        let specification: [Any] = [browser.rawValue, profile as Any? ?? NSNull(), NSNull(), container as Any? ?? NSNull(), ".x.com"]
+        let specification: [Any] = [browser.rawValue, profile as Any? ?? NSNull(), NSNull(), container as Any? ?? NSNull(), cookieDomain]
         let data = try JSONSerialization.data(withJSONObject: specification, options: [.withoutEscapingSlashes])
-        return "extractor.twitter.cookies=" + String(decoding: data, as: UTF8.self)
+        return "extractor.\(extractor).cookies=" + String(decoding: data, as: UTF8.self)
     }
 }
 

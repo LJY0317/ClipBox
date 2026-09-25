@@ -32,6 +32,7 @@ Its core idea is simple: download media once, remember it permanently, and keep 
 - Portable `.clipboxbackup` history creation and merge restore from both the CLI and macOS Settings UI.
 - YouTube Liked Videos and Watch Later preview/sync using a user-selected local browser session; already-downloaded media is skipped from the SQLite archive even if its file has moved elsewhere.
 - X Likes and Bookmarks preview/sync through `gallery-dl`, with photos, videos, and animated media selectable independently. Normal X Preview is incremental: it requests one real timeline page at a time (up to about 50 posts per selected collection) and resumes from the opaque continuation cursor only when the user asks for another page. A full-history sync records incomplete X items without storing direct media URLs; after an interruption, the next full sync refreshes and downloads those items before checking newer pages. The native UI can scan Likes + Bookmarks together, collapse overlapping entries by canonical media ID, download one file, and still record both collection memberships. Media that exists in only one collection remains included in the union.
+- Instagram Saved video/Reels preview and sync through `gallery-dl` using the selected signed-in browser profile. ClipBox intentionally filters this built-in collection to video assets and skips saved photos. Archive identity uses Instagram's stable media ID so reruns skip completed downloads even if files later move elsewhere. Preview→Sync can reuse the same in-memory listing for up to 10 minutes when the browser session and settings are unchanged, and concurrent ClipBox processes fail fast instead of issuing duplicate Instagram work for the same browser session.
 - Human-readable history export to XLSX/CSV/JSONL, plus merge import from CSV/JSONL. XLSX identifiers are emitted as text cells to preserve long platform IDs exactly.
 - AI-agent-friendly private adapter scaffolds and a JSON executable protocol. Site-specific adapter files live only under ClipBox's Application Support directory and can be scanned/synced from both the CLI and native GUI.
 
@@ -57,6 +58,8 @@ swift run clipbox sync youtube watch-later --browser safari --dry-run
 swift run clipbox scan x bookmarks --media-types videos,photos,animated --browser chrome --profile "Profile 1" --limit 100
 swift run clipbox sync x likes --username '<handle>' --media-types videos,photos --browser chrome --profile "Profile 1" --dry-run
 swift run clipbox sync x all --username '<handle>' --media-types videos,photos,animated --browser chrome --profile "Profile 1" --dry-run
+swift run clipbox scan instagram saved --browser chrome --profile "Profile 1" --limit 100
+swift run clipbox sync instagram saved --browser chrome --profile "Profile 1" --dry-run
 swift run clipbox history export "$HOME/Downloads/ClipBox History.xlsx"
 swift run clipbox history import "$HOME/Downloads/ClipBox History.csv"
 swift run clipbox adapter init my-private-adapter
@@ -66,9 +69,11 @@ swift run ClipBoxApp
 
 Private adapter customization is intentionally local. `clipbox adapter init` creates `adapter.json`, `adapter.py`, and AI-agent instructions outside the Git checkout. See [Adapter architecture](docs/adapter-spec.md) and [Private adapter protocol](docs/private-adapter-protocol.md).
 
-Authenticated X collection commands pass the selected browser and profile to gallery-dl. ClipBox does not export cookies or store session tokens. The GUI remembers a verified profile and optionally the Likes handle in local preferences; these never belong in the public repository.
+Authenticated X and Instagram collection commands pass the selected browser/profile directly to gallery-dl. ClipBox does not export cookies or store session tokens. The GUI remembers a verified X profile and optionally the Likes handle in local preferences; these never belong in the public repository.
 
 Built-in collection media types default to Videos + Photos + Animated media. The native Collections UI exposes them as checkboxes, and the CLI can override them with `--media-types`. X photos use gallery-dl's original-size image URL when available; X animated GIF-style media is kept in the MP4 form served by X rather than being re-encoded into a GIF.
+
+Instagram Saved currently imports video/Reels only. Saved photos remain untouched and are not added to the ClipBox archive by this built-in collection.
 
 For X, the native Collections UI defaults to selecting both Likes and Bookmarks. ClipBox treats the selected collections as a union for downloading: the same `site + media ID` is downloaded once even if it appears in both collections, while the SQLite membership table separately records that it was seen in Likes, Bookmarks, or both. The CLI exposes the same behavior as `clipbox scan x all` and `clipbox sync x all`.
 

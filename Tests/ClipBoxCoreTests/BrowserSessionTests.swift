@@ -11,6 +11,15 @@ final class BrowserSessionTests: XCTestCase, @unchecked Sendable {
         XCTAssertEqual(value[0] as? String, "chrome")
         XCTAssertEqual(value[1] as? String, session.profile)
         XCTAssertEqual(value[4] as? String, ".x.com")
+        let instagramOption = try session.galleryCookieOption(
+            extractor: "instagram",
+            cookieDomain: ".instagram.com"
+        )
+        let instagramPrefix = "extractor.instagram.cookies="
+        XCTAssertTrue(instagramOption.hasPrefix(instagramPrefix))
+        let instagramEncoded = String(instagramOption.dropFirst(instagramPrefix.count))
+        let instagramValue = try XCTUnwrap(JSONSerialization.jsonObject(with: Data(instagramEncoded.utf8)) as? [Any])
+        XCTAssertEqual(instagramValue[4] as? String, ".instagram.com")
         XCTAssertThrowsError(try BrowserSession(browser: .safari, profile: "Personal").galleryCookieOption())
         XCTAssertThrowsError(try BrowserSession(browser: .chrome, container: "Work").galleryCookieOption())
     }
@@ -133,6 +142,29 @@ final class BrowserSessionTests: XCTestCase, @unchecked Sendable {
         XCTAssertFalse(text.contains("Profile 1"))
         XCTAssertFalse(text.contains("auth_token"))
         XCTAssertFalse(text.contains("ct0"))
+    }
+
+    func testAuthenticatedCollectionLockIsSingleFlightPerSiteAndSession() throws {
+        let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let session = BrowserSession(browser: .chrome, profile: "/synthetic/Profile 1")
+        let instagram = CollectionWorkScope(site: "instagram", session: session)
+        let first = try CollectionWorkCoordinator.acquire(scope: instagram, directory: directory)
+        XCTAssertThrowsError(try CollectionWorkCoordinator.acquire(scope: instagram, directory: directory)) { error in
+            guard case CollectionWorkCoordinatorError.busy(let site) = error else {
+                return XCTFail("Expected collection busy lock")
+            }
+            XCTAssertEqual(site, "instagram")
+        }
+
+        let twitter = CollectionWorkScope(site: "twitter", session: session)
+        let independentSite = try CollectionWorkCoordinator.acquire(scope: twitter, directory: directory)
+        withExtendedLifetime(independentSite) { }
+        withExtendedLifetime(first) { }
+
+        let files = try FileManager.default.contentsOfDirectory(at: directory, includingPropertiesForKeys: nil)
+        let names = files.map(\.lastPathComponent).joined(separator: "\n")
+        XCTAssertFalse(names.contains("Profile 1"))
     }
 
     func testProcessDrainsBothPipesAndDoesNotDeadlock() throws {

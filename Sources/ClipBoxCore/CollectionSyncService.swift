@@ -90,7 +90,7 @@ public actor CollectionSyncService {
     private var planCache = CollectionExecutionPlanCache()
     private var xPreviewPaging: XPreviewPagingState?
     private let xPreviewLifetime: TimeInterval
-    private let xWorkDirectory: URL?
+    private let coordinationDirectory: URL?
     public private(set) var lastExecutionNote: String = ""
 
     static func shouldRefreshDirectMedia(status: Int, refreshAttempts: Int) -> Bool {
@@ -112,7 +112,7 @@ public actor CollectionSyncService {
         self.galleryDl = galleryDl ?? GalleryDlClient()
         self.directDownloader = directDownloader ?? DirectMediaDownloader()
         self.xPreviewLifetime = xPreviewLifetime
-        self.xWorkDirectory = xWorkDirectory
+        self.coordinationDirectory = xWorkDirectory
         self.downloadService = try ClipBoxService(
             archive: resolvedArchive,
             ytDlp: resolvedYtDlp
@@ -128,7 +128,7 @@ public actor CollectionSyncService {
         mediaTypes: MediaTypeSelection = .defaultSelection,
         limit: Int? = 100
     ) async throws -> CollectionScanResult {
-        if collection.site == "twitter" {
+        if ["twitter", "instagram"].contains(collection.site) {
             let batch = try await scan(collections: [collection], accountName: accountName,
                 cookiesFromBrowser: cookiesFromBrowser, browserProfile: browserProfile,
                 browserContainer: browserContainer, mediaTypes: mediaTypes, limit: limit)
@@ -139,29 +139,15 @@ public actor CollectionSyncService {
             }
             return CollectionScanResult(collection: collection, items: items)
         }
-        let items: [CollectionItem]
-        switch collection.site {
-        case "youtube":
-            items = try await ytDlp.scanCollection(
-                collection,
-                cookiesFromBrowser: cookiesFromBrowser,
-                limit: limit
-            ).filter { mediaTypes.contains($0.mediaType) }
-        case "twitter":
-            items = try await galleryDl.scanCollection(
-                collection,
-                accountName: accountName,
-                cookiesFromBrowser: cookiesFromBrowser,
+        return try await scanStandaloneCollection(
+            collection,
+            accountName: accountName,
+            cookiesFromBrowser: cookiesFromBrowser,
             browserProfile: browserProfile,
             browserContainer: browserContainer,
-                mediaTypes: mediaTypes,
-                limit: limit
-            )
-        default:
-            throw YtDlpError.inspectionFailed("No built-in collection scanner is configured for \(collection.site)")
-        }
-
-        return try await annotate(items, collection: collection)
+            mediaTypes: mediaTypes,
+            limit: limit
+        )
     }
 
     private func annotate(
@@ -215,7 +201,7 @@ public actor CollectionSyncService {
         dryRun: Bool = false,
         progress: CollectionSyncProgressHandler? = nil
     ) async throws -> CollectionSyncResult {
-        if collection.site == "twitter" {
+        if ["twitter", "instagram"].contains(collection.site) {
             let batch = try await sync(collections: [collection], accountName: accountName,
                 cookiesFromBrowser: cookiesFromBrowser, browserProfile: browserProfile,
                 browserContainer: browserContainer, outputDirectory: outputDirectory,
@@ -318,8 +304,12 @@ public actor CollectionSyncService {
     ) async throws -> CollectionBatchScanResult {
         let session = BrowserSession(browser: cookiesFromBrowser, profile: browserProfile, container: browserContainer)
         let xSelected = collections.contains { $0.site == "twitter" }
-        let lease = try xSelected ? acquireXWork(scope: XWorkScope(session: session)) : nil
-        _ = lease
+        let instagramSelected = collections.contains { $0.site == "instagram" }
+        let xLease = try xSelected ? acquireXWork(scope: XWorkScope(session: session)) : nil
+        let instagramLease = try instagramSelected
+            ? acquireCollectionWork(scope: CollectionWorkScope(site: "instagram", session: session))
+            : nil
+        _ = (xLease, instagramLease)
         var ownerID: String?
         do {
             ownerID = try await verifiedOwnerIDIfNeeded(collections: collections, accountName: accountName, session: session)
@@ -328,11 +318,11 @@ public actor CollectionSyncService {
             let data = try await scanBatchData(collections: collections, accountName: accountName,
                 cookiesFromBrowser: cookiesFromBrowser, browserProfile: browserProfile,
                 browserContainer: browserContainer, mediaTypes: mediaTypes, limit: limit, ownerID: ownerID)
-            if xSelected {
+            if isReusableGallerySelection(collections) {
                 let context = executionContext(collections: collections, accountName: accountName, session: session,
                     mediaTypes: mediaTypes, limit: limit, ownerID: ownerID)
                 planCache.store(context: context, data: data)
-                lastExecutionNote = "Fresh collection lookup completed. Sync can reuse this in-memory result for 10 minutes if the session and settings stay unchanged."
+                lastExecutionNote = "Fresh collection lookup completed. Sync can reuse this in-memory result for 10 minutes if the browser session and settings stay unchanged."
             }
             return data.result
         } catch let error as GalleryDlError {
@@ -355,8 +345,12 @@ public actor CollectionSyncService {
     ) async throws -> CollectionBatchSyncResult {
         let session = BrowserSession(browser: cookiesFromBrowser, profile: browserProfile, container: browserContainer)
         let xSelected = collections.contains { $0.site == "twitter" }
-        let lease = try xSelected ? acquireXWork(scope: XWorkScope(session: session)) : nil
-        _ = lease
+        let instagramSelected = collections.contains { $0.site == "instagram" }
+        let xLease = try xSelected ? acquireXWork(scope: XWorkScope(session: session)) : nil
+        let instagramLease = try instagramSelected
+            ? acquireCollectionWork(scope: CollectionWorkScope(site: "instagram", session: session))
+            : nil
+        _ = (xLease, instagramLease)
         let ownerID: String?
         do {
             ownerID = try await verifiedOwnerIDIfNeeded(collections: collections, accountName: accountName, session: session)
@@ -371,7 +365,7 @@ public actor CollectionSyncService {
                 "X account identity could not be server-verified, so ClipBox made no membership or download changes. Test the selected browser session and try again."
             )
         }
-        if xSelected, limit == nil, !dryRun {
+        if !collections.isEmpty, collections.allSatisfy({ $0.site == "twitter" }), limit == nil, !dryRun {
             return try await syncAllXPages(
                 collections: collections, accountName: accountName,
                 cookiesFromBrowser: cookiesFromBrowser, browserProfile: browserProfile,
@@ -383,9 +377,10 @@ public actor CollectionSyncService {
         let context = executionContext(collections: collections, accountName: accountName, session: session,
             mediaTypes: mediaTypes, limit: limit, ownerID: ownerID)
         let scanData: CollectionBatchScanData
-        if xSelected, let reusable = planCache.reusableData(context: context) {
+        let reusableGallerySelection = isReusableGallerySelection(collections)
+        if reusableGallerySelection, let reusable = planCache.reusableData(context: context) {
             scanData = reusable
-            lastExecutionNote = "Reused the recent Preview execution plan; X Likes/Bookmarks were not listed again."
+            lastExecutionNote = "Reused the recent Preview execution plan; the authenticated collection was not listed again."
         } else {
             do {
                 scanData = try await scanBatchData(collections: collections, accountName: accountName,
@@ -395,7 +390,7 @@ public actor CollectionSyncService {
                 try persistCooldownIfNeeded(error, session: session, ownerID: ownerID)
                 throw error
             }
-            if xSelected {
+            if reusableGallerySelection {
                 planCache.store(context: context, data: scanData)
                 lastExecutionNote = "Collection list was queried because there was no matching, unexpired Preview plan."
             }
@@ -404,10 +399,10 @@ public actor CollectionSyncService {
             session: session, cookiesFromBrowser: cookiesFromBrowser,
             outputDirectory: outputDirectory, mediaTypes: mediaTypes, dryRun: dryRun,
             progress: progress)
-        if xSelected, !dryRun {
+        if reusableGallerySelection, !dryRun {
             // A successful/partial Sync consumes the list plan. A later Sync must query
-            // X again so newly saved items are visible; only an explicit Preview→Sync
-            // handoff reuses the already-loaded list.
+            // the source again so newly saved items are visible; only an explicit
+            // Preview→Sync handoff reuses the already-loaded list.
             planCache.clear()
         }
         return result
@@ -1061,9 +1056,10 @@ public actor CollectionSyncService {
             }
             attempted += 1
             do {
-                if failure.site == "twitter" {
+                if failure.site == "twitter" || failure.site == "instagram" {
                     guard let refreshed = try await galleryDl.refreshItem(stub, session: session, mediaTypes: mediaTypes) else {
-                        throw GalleryDlError.scanFailed("The original X post no longer returned this media item.")
+                        let serviceName = failure.site == "instagram" ? "Instagram" : "X"
+                        throw GalleryDlError.scanFailed("The original \(serviceName) post no longer returned this media item.")
                     }
                     try await downloadDirectCollectionItem(refreshed, outputDirectory: outputDirectory,
                         session: session, mediaTypes: mediaTypes)
@@ -1124,6 +1120,12 @@ public actor CollectionSyncService {
             session: session, mediaTypes: mediaTypes, limit: limit, ownerID: ownerID)
     }
 
+    private func isReusableGallerySelection(_ collections: [BuiltInCollection]) -> Bool {
+        !collections.isEmpty && collections.allSatisfy { collection in
+            collection.site == "twitter" || collection.site == "instagram"
+        }
+    }
+
     private func verifiedOwnerIDIfNeeded(
         collections: [BuiltInCollection], accountName: String?, session: BrowserSession
     ) async throws -> String? {
@@ -1164,18 +1166,58 @@ public actor CollectionSyncService {
     }
 
     private func acquireXWork(scope: XWorkScope) throws -> XWorkLease {
-        if let xWorkDirectory {
-            return try XWorkCoordinator.acquire(scope: scope, directory: xWorkDirectory)
+        if let coordinationDirectory {
+            return try XWorkCoordinator.acquire(scope: scope, directory: coordinationDirectory)
         }
         return try XWorkCoordinator.acquire(scope: scope)
     }
 
+    private func acquireCollectionWork(scope: CollectionWorkScope) throws -> CollectionWorkLease {
+        if let coordinationDirectory {
+            return try CollectionWorkCoordinator.acquire(scope: scope, directory: coordinationDirectory)
+        }
+        return try CollectionWorkCoordinator.acquire(scope: scope)
+    }
+
     private func setXCooldown(scope: XWorkScope, until: Date, reason: String) throws {
-        if let xWorkDirectory {
-            try XWorkCoordinator.setCooldown(scope: scope, until: until, reason: reason, directory: xWorkDirectory)
+        if let coordinationDirectory {
+            try XWorkCoordinator.setCooldown(scope: scope, until: until, reason: reason, directory: coordinationDirectory)
         } else {
             try XWorkCoordinator.setCooldown(scope: scope, until: until, reason: reason)
         }
+    }
+
+    private func scanStandaloneCollection(
+        _ collection: BuiltInCollection,
+        accountName: String?,
+        cookiesFromBrowser: BrowserCookieSource,
+        browserProfile: String?,
+        browserContainer: String?,
+        mediaTypes: MediaTypeSelection,
+        limit: Int?
+    ) async throws -> CollectionScanResult {
+        let items: [CollectionItem]
+        switch collection.site {
+        case "youtube":
+            items = try await ytDlp.scanCollection(
+                collection,
+                cookiesFromBrowser: cookiesFromBrowser,
+                limit: limit
+            ).filter { mediaTypes.contains($0.mediaType) }
+        case "instagram":
+            items = try await galleryDl.scanCollection(
+                collection,
+                accountName: accountName,
+                cookiesFromBrowser: cookiesFromBrowser,
+                browserProfile: browserProfile,
+                browserContainer: browserContainer,
+                mediaTypes: mediaTypes,
+                limit: limit
+            )
+        default:
+            throw YtDlpError.inspectionFailed("No standalone collection scanner is configured for \(collection.site)")
+        }
+        return try await annotate(items, collection: collection)
     }
 
     private func scanBatchData(
@@ -1211,8 +1253,15 @@ public actor CollectionSyncService {
             if let items = xItems[collection] {
                 result = try await annotate(items, collection: collection, ownerID: ownerID)
             } else {
-                result = try await scan(collection: collection, accountName: accountName,
-                    cookiesFromBrowser: cookiesFromBrowser, mediaTypes: mediaTypes, limit: limit)
+                result = try await scanStandaloneCollection(
+                    collection,
+                    accountName: accountName,
+                    cookiesFromBrowser: cookiesFromBrowser,
+                    browserProfile: browserProfile,
+                    browserContainer: browserContainer,
+                    mediaTypes: mediaTypes,
+                    limit: limit
+                )
             }
 
             for scanItem in result.items {

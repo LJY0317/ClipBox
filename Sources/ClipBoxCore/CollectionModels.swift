@@ -78,6 +78,7 @@ public enum BuiltInCollection: String, CaseIterable, Codable, Sendable, Identifi
     case youtubeWatchLater = "youtube-watch-later"
     case xLikes = "x-likes"
     case xBookmarks = "x-bookmarks"
+    case instagramSaved = "instagram-saved"
 
     public var id: String { rawValue }
 
@@ -85,6 +86,7 @@ public enum BuiltInCollection: String, CaseIterable, Codable, Sendable, Identifi
         switch self {
         case .youtubeLiked, .youtubeWatchLater: "youtube"
         case .xLikes, .xBookmarks: "twitter"
+        case .instagramSaved: "instagram"
         }
     }
 
@@ -94,6 +96,7 @@ public enum BuiltInCollection: String, CaseIterable, Codable, Sendable, Identifi
         case .youtubeWatchLater: "watch-later"
         case .xLikes: "likes"
         case .xBookmarks: "bookmarks"
+        case .instagramSaved: "saved"
         }
     }
 
@@ -103,6 +106,7 @@ public enum BuiltInCollection: String, CaseIterable, Codable, Sendable, Identifi
         case .youtubeWatchLater: "YouTube Watch Later"
         case .xLikes: "X Likes"
         case .xBookmarks: "X Bookmarks"
+        case .instagramSaved: "Instagram Saved Videos"
         }
     }
 
@@ -110,7 +114,7 @@ public enum BuiltInCollection: String, CaseIterable, Codable, Sendable, Identifi
         switch self {
         case .youtubeLiked: ":ytfav"
         case .youtubeWatchLater: ":ytwatchlater"
-        case .xLikes, .xBookmarks: nil
+        case .xLikes, .xBookmarks, .instagramSaved: nil
         }
     }
 
@@ -127,6 +131,10 @@ public enum BuiltInCollection: String, CaseIterable, Codable, Sendable, Identifi
             return "https://x.com/\(accountName)/likes"
         case .xBookmarks:
             return "https://x.com/i/bookmarks"
+        case .instagramSaved:
+            // gallery-dl's Saved extractor authenticates from browser cookies and
+            // does not use this path segment as account identity.
+            return "https://www.instagram.com/me/saved/"
         case .youtubeLiked, .youtubeWatchLater:
             return nil
         }
@@ -151,6 +159,13 @@ public enum BuiltInCollection: String, CaseIterable, Codable, Sendable, Identifi
                 return .xLikes
             case "bookmark", "bookmarks", "saved":
                 return .xBookmarks
+            default:
+                return nil
+            }
+        case "instagram", "ig":
+            switch normalizedCollection {
+            case "saved", "save", "bookmarks", "saved-videos", "videos":
+                return .instagramSaved
             default:
                 return nil
             }

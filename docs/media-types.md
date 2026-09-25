@@ -16,6 +16,8 @@ For X, gallery-dl is used only to enumerate the authenticated timeline and ident
 
 YouTube's current built-in Liked/Watch Later collections yield video items, so selecting Photos or Animated media does not create additional YouTube files.
 
+Instagram Saved is intentionally video-only in the current built-in integration. ClipBox accepts video/Reels assets returned by gallery-dl and skips saved photos rather than silently expanding the scope of the feature.
+
 ## Optional extras planned separately
 
 Common download tools also expose useful secondary assets:
