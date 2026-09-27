@@ -1,0 +1,19 @@
+name: CI
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  test:
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Swift version
+        run: swift --version
+      - name: Swift build
+        run: swift build
+      - name: Swift tests
+        run: swift test
+      - name: Privacy tool syntax
+        run: python3 -m py_compile tools/privacy_check.py

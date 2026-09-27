@@ -1,0 +1,57 @@
+# Architecture
+
+ClipBox is currently a macOS-only Swift application with one shared core and two first-class frontends.
+
+```text
+                  ClipBoxCore
+        +-------------------------------+
+        | adapters / downloader         |
+        | archive DB / filters          |
+        | format selection / queue      |
+        | backup/import/export          |
+        +---------------+---------------+
+                        |
+               application API
+              +---------+---------+
+              |                   |
+             CLI                 GUI
+              |                   |
+         AI / scripts          humans
+```
+
+The GUI is native SwiftUI with selective AppKit integration. The CLI and GUI import the same Swift core rather than calling each other.
+
+The default output root is the macOS Downloads directory with a `ClipBox` child directory. It is discovered through `FileManager` system directory APIs rather than hardcoded home paths.
+
+Configuration precedence is planned as application default, user default, site override, collection override, then current job/CLI override.
+
+The authoritative duplicate check is the archive database, preferably `site + canonical media ID`. Files may be renamed or moved without losing archive history.
+
+## Current extraction-engine boundary
+
+The shared core invokes `yt-dlp` as an external extraction/download engine for public URL support. ClipBox owns the surrounding product behavior: stable archive identity, duplicate decisions, persistent output preferences, archive records, and the GUI/CLI contracts.
+
+The core locates `yt-dlp` and `ffmpeg` through `PATH` and common macOS package-manager locations. Missing dependencies are reported explicitly rather than failing silently.
+
+Downloads currently request `bestvideo*+bestaudio/best`. `ffmpeg` is used by the underlying extraction flow when separate streams need to be merged/remuxed; ClipBox does not intentionally request video re-encoding.
+
+## Authenticated collections
+
+Built-in collection adapters normalize a service-specific collection into `CollectionItem` records, then the shared collection service compares those records with the archive database before downloading anything. The first implementation supports YouTube Liked Videos and Watch Later through yt-dlp's `:ytfav` and `:ytwatchlater` feeds.
+
+Authentication stays local: the user selects a browser/profile, and ClipBox delegates runtime cookie access to the extraction engine. The X adapter shares one gallery-dl process across selected collections and uses memory pipes. ClipBox does not copy raw cookie values into SQLite or preferences. See [X browser sessions](x-browser-sessions.md) for privacy boundaries and upstream limitations.
+
+Collection membership has its own SQLite table (`site + owner namespace + collection + media ID`) so ClipBox can distinguish items previously seen in a collection from items merely downloaded through another route without merging different verified X accounts. Legacy rows are migrated into an `unknown` owner namespace rather than being assigned to whichever account is currently signed in. Successful-download state remains globally keyed by `site + media ID`, so the same media file is still downloaded only once.
+
+### X collection path
+
+X Likes and Bookmarks use `gallery-dl` for authenticated timeline enumeration and the shared archive for state. The collection parser consumes only MP4/video messages and keeps both identities exposed by X tooling:
+
+- Tweet/post ID is stored as the source ID.
+- Native video media ID is the archive identity whenever it can be derived from the X CDN URL.
+
+This distinction is required for posts containing multiple videos: several videos may share one Tweet ID but have different media IDs. Each video is therefore represented by a separate collection/archive item.
+
+For collection downloads, gallery-dl's selected highest-bitrate direct MP4 variant is transferred without re-encoding. Public live verification showed the selected 1280x720 / 2,176,000 bps MP4 variant corresponded to yt-dlp's 1280x720 / 2176 kbps top progressive format for the same X video. The direct MP4 contained both H.264 video and AAC audio in that sample.
+
+X Likes requires an account handle to construct the Likes URL. The GUI can remember it in local preferences alongside the verified browser/profile; the CLI accepts it as a request argument. X Bookmarks uses the authenticated account's bookmarks endpoint and does not need a handle.

@@ -1,0 +1,51 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "ClipBox Private Adapter Manifest",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "protocolVersion",
+    "id",
+    "displayName",
+    "executable",
+    "collections"
+  ],
+  "properties": {
+    "protocolVersion": {
+      "const": 1
+    },
+    "id": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 80,
+      "pattern": "^[A-Za-z0-9._-]+$"
+    },
+    "displayName": {
+      "type": "string",
+      "minLength": 1
+    },
+    "executable": {
+      "type": "string",
+      "minLength": 1
+    },
+    "collections": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["id", "displayName"],
+        "properties": {
+          "id": {
+            "type": "string",
+            "minLength": 1,
+            "pattern": "^[A-Za-z0-9._-]+$"
+          },
+          "displayName": {
+            "type": "string",
+            "minLength": 1
+          }
+        }
+      }
+    }
+  }
+}

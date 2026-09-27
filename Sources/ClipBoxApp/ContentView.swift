@@ -1,0 +1,1403 @@
+import AppKit
+import ClipBoxCore
+import SwiftUI
+
+@MainActor
+private final class CollectionThumbnailLoader: ObservableObject {
+    @Published var image: NSImage?
+    private var task: Task<Void, Never>?
+    private static let cache = NSCache<NSURL, NSImage>()
+    private static let session: URLSession = {
+        let configuration = URLSessionConfiguration.ephemeral
+        configuration.httpCookieStorage = nil
+        configuration.httpShouldSetCookies = false
+        configuration.httpMaximumConnectionsPerHost = 3
+        configuration.urlCache = URLCache(memoryCapacity: 16 * 1024 * 1024, diskCapacity: 0)
+        configuration.requestCachePolicy = .returnCacheDataElseLoad
+        return URLSession(configuration: configuration)
+    }()
+
+    func load(_ url: URL?) {
+        task?.cancel()
+        image = nil
+        guard let url else { return }
+        if let cached = Self.cache.object(forKey: url as NSURL) {
+            image = cached
+            return
+        }
+        task = Task { [weak self] in
+            do {
+                var request = URLRequest(url: url)
+                request.timeoutInterval = 20
+                request.setValue("image/avif,image/webp,image/*,*/*;q=0.5", forHTTPHeaderField: "Accept")
+                let (data, response) = try await Self.session.data(for: request)
+                try Task.checkCancellation()
+                guard let http = response as? HTTPURLResponse,
+                      (200..<300).contains(http.statusCode),
+                      data.count <= 5 * 1024 * 1024,
+                      let image = NSImage(data: data) else { return }
+                Self.cache.setObject(image, forKey: url as NSURL)
+                self?.image = image
+            } catch { }
+        }
+    }
+
+    func cancel() {
+        task?.cancel()
+        task = nil
+    }
+}
+
+private struct CollectionThumbnailView: View {
+    let url: URL?
+    var width: CGFloat? = 96
+    var height: CGFloat = 72
+    @StateObject private var loader = CollectionThumbnailLoader()
+
+    var body: some View {
+        Group {
+            if let image = loader.image {
+                Image(nsImage: image)
+                    .resizable()
+                    .scaledToFill()
+            } else {
+                ZStack {
+                    RoundedRectangle(cornerRadius: 7).fill(.quaternary)
+                    Image(systemName: "photo").foregroundStyle(.tertiary)
+                }
+            }
+        }
+        .frame(width: width, height: height)
+        .clipShape(RoundedRectangle(cornerRadius: 7))
+        .task(id: url) { loader.load(url) }
+        .onDisappear { loader.cancel() }
+    }
+}
+
+private enum SidebarSection: String, CaseIterable, Identifiable {
+    case download
+    case collections
+    case privateAdapters
+    case history
+
+    var id: String { rawValue }
+
+    var systemImage: String {
+        switch self {
+        case .download: "arrow.down.circle"
+        case .collections: "rectangle.stack"
+        case .privateAdapters: "puzzlepiece.extension"
+        case .history: "clock.arrow.circlepath"
+        }
+    }
+
+    @MainActor
+    func title(_ language: AppLanguageStore) -> String {
+        switch self {
+        case .download: language.text("다운로드", "Download")
+        case .collections: language.text("저장한 항목", "Saved Items")
+        case .privateAdapters: language.text("개인 사이트", "Private Sites")
+        case .history: language.text("다운로드 기록", "Download History")
+        }
+    }
+}
+
+struct ContentView: View {
+    @EnvironmentObject private var language: AppLanguageStore
+    @StateObject private var model = DownloadViewModel()
+    @StateObject private var collectionModel = CollectionViewModel()
+    @StateObject private var privateAdapterModel = PrivateAdapterViewModel()
+    @State private var selection: SidebarSection? = .download
+    @State private var showFullScanConfirmation = false
+
+    private func observationRow(_ item: CollectionObservation) -> some View {
+        HStack(alignment: .top, spacing: 8) {
+            Text("#\(item.position)").monospacedDigit().foregroundStyle(.secondary)
+            if collectionModel.thumbnailURL(for: item) != nil {
+                CollectionThumbnailView(url: collectionModel.thumbnailURL(for: item))
+            } else {
+                Image(systemName: item.type.systemImage)
+                    .frame(width: 24)
+            }
+            VStack(alignment: .leading, spacing: 3) {
+                if let creator = collectionModel.creatorHandle(for: item), !creator.isEmpty {
+                    Text("@\(creator)")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
+                Text(item.title ?? language.text("제목 없음", "Untitled")).lineLimit(2)
+                Text(language.text(
+                    "게시: \(item.publishedAt ?? "알 수 없음")",
+                    "Published: \(item.publishedAt ?? "Unknown")"
+                ))
+                    .font(.caption).foregroundStyle(.secondary)
+                if let date = item.bookmarkedAt {
+                    Text(language.text("북마크: \(date)", "Bookmarked: \(date)"))
+                        .font(.caption).foregroundStyle(.secondary)
+                }
+                if let url = URL(string: item.sourceURL), url.scheme == "https" {
+                    Link(language.text("원문 열기", "Open original"), destination: url).font(.caption)
+                }
+            }
+            Spacer()
+            Text(item.downloaded ? language.text("이미 저장됨", "Already Saved") : language.text("새 항목", "New"))
+                .font(.caption)
+        }
+    }
+
+    var body: some View {
+        NavigationSplitView {
+            List(SidebarSection.allCases, selection: $selection) { section in
+                Label(section.title(language), systemImage: section.systemImage)
+                    .tag(section)
+            }
+            .navigationTitle("ClipBox")
+            .navigationSplitViewColumnWidth(min: 175, ideal: 190, max: 240)
+        } detail: {
+            switch selection ?? .download {
+            case .download:
+                downloadView
+            case .collections:
+                collectionsView
+            case .privateAdapters:
+                privateAdaptersView
+            case .history:
+                historyView
+            }
+        }
+    }
+
+    private var downloadView: some View {
+        ScrollView {
+            VStack(alignment: .leading, spacing: 20) {
+                VStack(alignment: .leading, spacing: 8) {
+                    Text(language.text("링크에서 다운로드", "Download from a link"))
+                        .font(.largeTitle)
+                        .fontWeight(.semibold)
+                    Text(language.text(
+                        "링크를 붙여넣으세요. 사진이나 동영상이 여러 개면 원하는 항목만 골라 저장할 수 있습니다.",
+                        "Paste a link. If it contains multiple photos or videos, you can choose exactly what to save."
+                    ))
+                        .foregroundStyle(.secondary)
+                }
+
+                dependencyBanner
+
+                GroupBox(language.text("링크", "Link")) {
+                    VStack(alignment: .leading, spacing: 12) {
+                        TextField(language.text("게시물이나 동영상 주소 붙여넣기", "Paste a post or video link"), text: $model.sourceURL)
+                            .textFieldStyle(.roundedBorder)
+
+                        Picker(language.text("로그인이 필요한 링크", "For links that need sign-in"), selection: $model.browserCookieSource) {
+                            Text(language.text("로그인 없이 열기", "No sign-in"))
+                                .tag(Optional<BrowserCookieSource>.none)
+                            ForEach(BrowserCookieSource.allCases, id: \.self) { browser in
+                                Text(browser.displayName)
+                                    .tag(Optional(browser))
+                            }
+                        }
+
+                        LabeledContent(language.text("저장할 폴더", "Save to")) {
+                            HStack(spacing: 10) {
+                                Text(model.outputDirectory.path)
+                                    .lineLimit(1)
+                                    .truncationMode(.middle)
+                                    .foregroundStyle(.secondary)
+
+                                Button(language.text("변경…", "Choose…")) {
+                                    chooseOutputDirectory()
+                                }
+                            }
+                        }
+
+                        HStack {
+                            Button(language.text("항목 확인", "Check Items")) {
+                                model.analyze()
+                            }
+                            .disabled(!model.canAnalyze)
+
+                            Spacer()
+
+                            if model.isWorking {
+                                ProgressView()
+                                    .controlSize(.small)
+                            }
+
+                            Button(downloadButtonTitle) {
+                                model.download()
+                            }
+                            .buttonStyle(.borderedProminent)
+                            .disabled(!model.canDownload)
+                        }
+                    }
+                    .padding(6)
+                }
+
+                if let inspection = model.inspection {
+                    downloadSelection(inspection)
+                }
+
+                if !model.statusMessage.isEmpty {
+                    Text(model.statusMessage)
+                        .font(.callout)
+                        .foregroundStyle(.secondary)
+                        .textSelection(.enabled)
+                }
+
+                if let errorMessage = model.errorMessage {
+                    Label(errorMessage, systemImage: "exclamationmark.triangle.fill")
+                        .foregroundStyle(.red)
+                        .textSelection(.enabled)
+                }
+            }
+            .frame(maxWidth: 820, alignment: .leading)
+            .padding(28)
+            .frame(maxWidth: .infinity, alignment: .top)
+        }
+        .navigationTitle(language.text("다운로드", "Download"))
+    }
+
+    @ViewBuilder
+    private var dependencyBanner: some View {
+        if let dependencies = model.dependencies {
+            if model.usesGalleryPostResolver && !dependencies.galleryDl.isAvailable {
+                GroupBox {
+                    VStack(alignment: .leading, spacing: 6) {
+                        Label(language.text("X·Instagram 다운로드 준비가 필요합니다", "X & Instagram setup needed"), systemImage: "wrench.and.screwdriver")
+                            .fontWeight(.semibold)
+                        Text(language.text(
+                            "이 게시물의 사진과 동영상을 찾으려면 추가 다운로드 구성 요소인 gallery-dl이 필요합니다. Homebrew를 사용한다면 `brew install gallery-dl`로 설치할 수 있습니다.",
+                            "ClipBox needs the gallery-dl download component to find photos and videos in this post. If you use Homebrew, install it with `brew install gallery-dl`."
+                        ))
+                            .font(.callout)
+                            .foregroundStyle(.secondary)
+                            .textSelection(.enabled)
+                    }
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .padding(4)
+                }
+            } else if !model.usesGalleryPostResolver && !dependencies.ytDlp.isAvailable {
+                GroupBox {
+                    VStack(alignment: .leading, spacing: 6) {
+                        Label(language.text("다운로드 준비가 필요합니다", "Download setup needed"), systemImage: "wrench.and.screwdriver")
+                            .fontWeight(.semibold)
+                        Text(language.text(
+                            "ClipBox가 링크를 읽고 저장하려면 yt-dlp가 필요합니다. Homebrew를 사용한다면 `brew install yt-dlp`로 설치할 수 있습니다.",
+                            "ClipBox needs yt-dlp to read and save links. If you use Homebrew, install it with `brew install yt-dlp`."
+                        ))
+                            .font(.callout)
+                            .foregroundStyle(.secondary)
+                            .textSelection(.enabled)
+                    }
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .padding(4)
+                }
+            } else if !model.usesGalleryPostResolver && !dependencies.ffmpeg.isAvailable {
+                Label(language.text(
+                    "ffmpeg가 없어 일부 동영상은 가장 좋은 화질로 저장되지 않을 수 있습니다.",
+                    "Without ffmpeg, some videos may not be saved at their best available quality."
+                ), systemImage: "exclamationmark.triangle")
+                    .foregroundStyle(.orange)
+            }
+        }
+    }
+
+    private var downloadButtonTitle: String {
+        if model.inspection != nil, model.assets.count > 1 {
+            return language.text(
+                "선택한 \(model.selectedCount)개 다운로드",
+                "Download \(model.selectedCount) Selected"
+            )
+        }
+        return language.text("다운로드", "Download")
+    }
+
+    private func downloadSelection(_ inspection: LinkInspection) -> some View {
+        GroupBox(language.text("다운로드할 항목", "Items to download")) {
+            VStack(alignment: .leading, spacing: 12) {
+                HStack {
+                    Text(language.text(
+                        "\(inspection.assets.count)개 항목",
+                        "\(inspection.assets.count) item(s)"
+                    ))
+                        .font(.headline)
+                    Spacer()
+                    if inspection.assets.count > 1, model.selectableCount > 0 {
+                        Button(model.allSelectableAssetsSelected
+                               ? language.text("선택 해제", "Deselect All")
+                               : language.text("모두 선택", "Select All")) {
+                            if model.allSelectableAssetsSelected { model.selectNone() }
+                            else { model.selectAll() }
+                        }
+                        .buttonStyle(.plain)
+                    }
+                }
+
+                LazyVGrid(
+                    columns: [GridItem(.adaptive(minimum: 250), spacing: 12)],
+                    alignment: .leading,
+                    spacing: 12
+                ) {
+                    ForEach(inspection.assets) { asset in
+                        downloadAssetCard(asset)
+                    }
+                }
+            }
+            .padding(6)
+        }
+    }
+
+    private func downloadAssetCard(_ asset: LinkDownloadAsset) -> some View {
+        let isSelected = model.selectedAssetIDs.contains(asset.id)
+        return VStack(alignment: .leading, spacing: 9) {
+            ZStack(alignment: .topLeading) {
+                CollectionThumbnailView(
+                    url: asset.thumbnailURL.flatMap(URL.init(string:)),
+                    width: nil,
+                    height: 140
+                )
+                .frame(maxWidth: .infinity)
+
+                if !asset.alreadyDownloaded {
+                    Toggle("", isOn: Binding(
+                        get: { isSelected },
+                        set: { model.setSelected(asset, selected: $0) }
+                    ))
+                        .labelsHidden()
+                        .toggleStyle(.checkbox)
+                        .padding(8)
+                        .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 8))
+                        .padding(8)
+                }
+
+                if asset.mediaType == .video || asset.mediaType == .animated {
+                    Image(systemName: "play.fill")
+                        .font(.title3)
+                        .padding(9)
+                        .background(.regularMaterial, in: Circle())
+                        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .center)
+                }
+            }
+
+            HStack(spacing: 7) {
+                Label(mediaTypeName(asset.mediaType), systemImage: asset.mediaType.systemImage)
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                if let width = asset.media.width, let height = asset.media.height {
+                    Text("\(width) × \(height)")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
+                Spacer()
+                if asset.alreadyDownloaded {
+                    Label(language.text("이미 저장됨", "Already Saved"), systemImage: "checkmark.circle.fill")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
+            }
+
+            if let title = asset.media.title, !title.isEmpty {
+                Text(title).font(.subheadline).lineLimit(2)
+            }
+        }
+        .padding(10)
+        .background(.quaternary.opacity(0.45), in: RoundedRectangle(cornerRadius: 11))
+        .contentShape(RoundedRectangle(cornerRadius: 11))
+        .onTapGesture {
+            guard !asset.alreadyDownloaded else { return }
+            model.setSelected(asset, selected: !isSelected)
+        }
+    }
+
+    private var historyView: some View {
+        VStack(alignment: .leading, spacing: 16) {
+            HStack {
+                VStack(alignment: .leading, spacing: 4) {
+                    Text(language.text("다운로드 기록", "Download history"))
+                        .font(.largeTitle)
+                        .fontWeight(.semibold)
+                    Text(language.text(
+                        "지금까지 \(model.archiveCount)개를 기억하고 있습니다. 파일을 옮기거나 지워도 다운로드했던 기록은 남습니다.",
+                        "ClipBox remembers \(model.archiveCount) downloaded items. Moving or deleting a file doesn't remove its download history."
+                    ))
+                        .foregroundStyle(.secondary)
+                }
+                Spacer()
+                Button(language.text("새로고침", "Refresh")) {
+                    Task { await model.refreshHistory() }
+                }
+            }
+
+            if model.recentHistory.isEmpty {
+                ContentUnavailableView(
+                    language.text("아직 기록이 없습니다", "No History Yet"),
+                    systemImage: "clock.arrow.circlepath",
+                    description: Text(language.text("다운로드한 항목이 여기에 표시됩니다.", "Downloaded items will appear here."))
+                )
+            } else {
+                List {
+                    ForEach(model.recentHistory) { record in
+                        VStack(alignment: .leading, spacing: 6) {
+                            HStack {
+                                Text(record.title ?? language.text("제목 없음", "Untitled"))
+                                    .fontWeight(.medium)
+                                Spacer()
+                                if record.status == .downloaded {
+                                    Text(historyStatus(record.status))
+                                        .foregroundStyle(.secondary)
+                                } else {
+                                    Text(historyStatus(record.status))
+                                        .foregroundStyle(.orange)
+                                }
+                            }
+
+                            HStack(spacing: 10) {
+                                if let creator = record.creator, !creator.isEmpty {
+                                    Text(creator.hasPrefix("@") ? creator : "@\(creator)")
+                                }
+                                if let downloaded = historyDate(record.downloadedAt) {
+                                    Text(downloaded)
+                                }
+                                if let sourceURL = record.sourceURL,
+                                   let url = URL(string: sourceURL),
+                                   url.scheme == "https" {
+                                    Link(language.text("원문 열기", "Open Original"), destination: url)
+                                }
+                            }
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+
+                            DisclosureGroup(language.text("세부 정보", "Details")) {
+                                VStack(alignment: .leading, spacing: 3) {
+                                    Text(language.text("사이트: \(record.site)", "Site: \(record.site)"))
+                                    Text(language.text("항목 ID: \(record.mediaID)", "Item ID: \(record.mediaID)"))
+                                        .textSelection(.enabled)
+                                    if let outputPath = record.outputPath {
+                                        Text(language.text("파일 위치: \(outputPath)", "File: \(outputPath)"))
+                                            .lineLimit(2)
+                                            .truncationMode(.middle)
+                                            .textSelection(.enabled)
+                                    }
+                                }
+                                .font(.caption)
+                                .foregroundStyle(.tertiary)
+                            }
+                        }
+                        .padding(.vertical, 5)
+                    }
+                }
+            }
+        }
+        .padding(28)
+        .navigationTitle(language.text("다운로드 기록", "Download History"))
+    }
+
+    @ViewBuilder
+    private var sessionButtons: some View {
+        if collectionModel.isInstagramMode {
+            Button(language.text("브라우저에서 Instagram 열기", "Open Instagram in browser")) {
+                collectionModel.openInstagramLogin()
+            }
+        } else {
+            Button(language.text("브라우저에서 X 열기", "Open X in browser")) { collectionModel.openXLogin() }
+            Button(language.text("로그인 확인", "Check Sign-In")) { collectionModel.testSessions() }
+        }
+        Button(language.text("브라우저 목록 새로고침", "Refresh Browser List")) { collectionModel.refreshSessions() }
+        if collectionModel.isXMode {
+            Button(language.text("저장한 로그인 선택 지우기", "Forget Saved Sign-In")) { collectionModel.forgetConnection() }
+        }
+    }
+
+    private var collectionActions: some View {
+        HStack {
+            Button(language.text("항목 확인", "Check Items")) {
+                collectionModel.preview()
+            }
+            .disabled(!collectionModel.canRun)
+
+            Spacer()
+
+            if collectionModel.isWorking {
+                ProgressView().controlSize(.small)
+                Button(language.text("중지", "Stop")) { collectionModel.cancel() }
+            }
+
+            Button(language.text("새 항목 다운로드", "Download New Items")) {
+                collectionModel.sync()
+            }
+            .buttonStyle(.borderedProminent)
+            .disabled(!collectionModel.canRun)
+        }
+
+    }
+
+    private var collectionsView: some View {
+        ScrollView {
+            VStack(alignment: .leading, spacing: 20) {
+                VStack(alignment: .leading, spacing: 8) {
+                    Text(language.text("저장한 항목 가져오기", "Download saved items"))
+                        .font(.largeTitle)
+                        .fontWeight(.semibold)
+                    Text(language.text("X, Instagram, YouTube에 저장해 둔 항목을 확인하고, 아직 받지 않은 것만 다운로드합니다.", "Check items you've saved on X, Instagram, or YouTube, then download only what you haven't saved yet."))
+                        .foregroundStyle(.secondary)
+                }
+
+                GroupBox(language.text("가져올 항목", "What to download")) {
+                    VStack(alignment: .leading, spacing: 12) {
+                        Picker(language.text("사이트", "Site"), selection: collectionSourceBinding) {
+                            ForEach(CollectionSourceMode.allCases) { source in
+                                Text(collectionSourceName(source)).tag(source)
+                            }
+                        }
+
+                        VStack(alignment: .leading, spacing: 8) {
+                            Picker(language.text("로그인할 브라우저", "Signed-in browser"), selection: Binding(get: { collectionModel.browser }, set: { collectionModel.setBrowser($0) })) {
+                                ForEach(BrowserCookieSource.allCases, id: \.self) { browser in
+                                    Text(browser.displayName).tag(browser)
+                                }
+                            }
+                            if collectionModel.usesGalleryBrowserSession {
+                                Group {
+                                    Picker(language.text("브라우저 프로필", "Browser profile"), selection: Binding(
+                                        get: { collectionModel.browserProfile },
+                                        set: { collectionModel.setBrowserProfile($0) }
+                                    )) {
+                                        Text(language.text("자동으로 선택", "Choose automatically")).tag("")
+                                        ForEach(collectionModel.profilesForBrowser) { session in
+                                            Text(collectionModel.profileLabel(session)).tag(session.profile ?? "")
+                                        }
+                                        if !collectionModel.browserProfile.isEmpty,
+                                           !collectionModel.profilesForBrowser.contains(where: { $0.profile == collectionModel.browserProfile }) {
+                                            Text(language.text("이전에 선택한 프로필", "Previously selected profile")).tag(collectionModel.browserProfile)
+                                        }
+                                    }
+                                    DisclosureGroup(language.text("프로필을 직접 지정", "Choose profile manually")) {
+                                        if collectionModel.browser == .safari {
+                                            Text(language.text(
+                                                "Safari 저장소 위치는 선택한 프로필에서 자동으로 관리됩니다. 직접 경로를 지정해야 할 때만 아래 항목을 사용하세요.",
+                                                "Safari storage is managed automatically from the selected profile. Use the manual path only when needed."
+                                            ))
+                                                .font(.caption)
+                                                .foregroundStyle(.secondary)
+                                            DisclosureGroup(language.text("Safari 로그인 데이터 위치 직접 입력", "Enter Safari data location")) {
+                                                TextField(language.text("Safari 저장소 경로", "Safari storage path"), text: Binding(
+                                                    get: { collectionModel.browserProfile },
+                                                    set: { collectionModel.setBrowserProfile($0) }
+                                                ))
+                                                    .textFieldStyle(.roundedBorder)
+                                                    .font(.caption.monospaced())
+                                            }
+                                        } else {
+                                            TextField(language.text("프로필 경로 또는 이름", "Profile directory or name"), text: Binding(
+                                                get: { collectionModel.browserProfile },
+                                                set: { collectionModel.setBrowserProfile($0) }
+                                            ))
+                                                .textFieldStyle(.roundedBorder)
+                                            if collectionModel.browser == .firefox {
+                                                TextField(language.text("Firefox 컨테이너 (선택 사항)", "Firefox container (optional)"), text: Binding(
+                                                    get: { collectionModel.browserContainer },
+                                                    set: { collectionModel.setBrowserContainer($0) }
+                                                ))
+                                                    .textFieldStyle(.roundedBorder)
+                                            }
+                                        }
+                                    }
+                                }
+                                if collectionModel.browser == .safari {
+                                    Text(collectionModel.isInstagramMode
+                                        ? language.text("Instagram에 로그인한 Safari 프로필을 선택해 주세요. 프로필 이름을 확인할 수 없는 경우에도 저장소 자체는 선택할 수 있습니다.", "Choose the Safari profile where you're signed in to Instagram. Stores without a confirmed profile name remain selectable.")
+                                        : language.text("X에 로그인한 Safari 프로필을 선택한 뒤 ‘연결 확인’을 눌러 주세요. 프로필 이름을 확인할 수 없는 경우에도 저장소 자체는 선택할 수 있습니다.", "Choose the Safari profile where you're signed in to X, then use Test connection. Stores without a confirmed profile name remain selectable."))
+                                        .font(.caption).foregroundStyle(.secondary)
+                                }
+                                ForEach(collectionModel.discoveryIssues.filter { $0.browser == collectionModel.browser }) { issue in
+                                    Label(discoveryIssueMessage(issue), systemImage: "exclamationmark.triangle")
+                                        .font(.caption)
+                                        .foregroundStyle(.orange)
+                                }
+                                ViewThatFits(in: .horizontal) {
+                                    HStack { sessionButtons }
+                                    VStack(alignment: .leading) { sessionButtons }
+                                }
+                                ForEach(collectionModel.sessionChecks) { check in
+                                    VStack(alignment: .leading, spacing: 4) {
+                                        HStack {
+                                            Label(collectionModel.profileLabel(check.session), systemImage: check.connected ? "checkmark.circle.fill" : "exclamationmark.circle")
+                                            if check.connected {
+                                                Button(language.text("이 프로필 사용", "Use This Profile")) { collectionModel.useSession(check.session) }
+                                            }
+                                        }
+                                        Text(sessionCheckMessage(check)).font(.caption).foregroundStyle(.secondary)
+                                        if let identity = check.identity {
+                                            HStack(spacing: 6) {
+                                                Text(language.text("X 계정:", "X account:")).font(.caption).foregroundStyle(.secondary)
+                                                Text(identity.handle.map { "@\($0)" } ?? language.text("계정 확인됨", "Account verified"))
+                                                    .font(.caption).fontWeight(.medium)
+                                                Text(identity.evidence == .serverVerified ? language.text("로그인 확인됨", "Sign-In Confirmed") : language.text("로그인만 확인됨", "Sign-In Found"))
+                                                    .font(.caption2).foregroundStyle(identity.evidence == .serverVerified ? .green : .orange)
+                                            }
+                                        }
+                                        Text(language.text("확인: \(check.checkedAt.formatted(date: .abbreviated, time: .standard))", "Checked \(check.checkedAt.formatted(date: .abbreviated, time: .standard))"))
+                                            .font(.caption2).foregroundStyle(.tertiary)
+                                    }
+                                }
+                            }
+                        }
+
+                        if collectionModel.isInstagramMode {
+                            VStack(alignment: .leading, spacing: 4) {
+                                Text(language.text("가져올 종류", "What to download")).font(.subheadline).foregroundStyle(.secondary)
+                                Text(language.text("Instagram 저장됨에서는 동영상과 Reels만 다운로드합니다. 사진은 그대로 둡니다.", "From Instagram Saved, ClipBox downloads videos and Reels only. Photos are left untouched."))
+                                    .font(.caption).foregroundStyle(.secondary)
+                            }
+                        } else {
+                            VStack(alignment: .leading, spacing: 8) {
+                                Text(language.text("파일 종류", "File types")).font(.subheadline).foregroundStyle(.secondary)
+                                LazyVGrid(columns: [GridItem(.adaptive(minimum: 145), alignment: .leading)], alignment: .leading) {
+                                    ForEach(MediaAssetType.allCases) { type in
+                                        Toggle(mediaTypeName(type), isOn: mediaTypeBinding(type))
+                                            .toggleStyle(.checkbox).fixedSize(horizontal: true, vertical: false)
+                                    }
+                                }
+                            }
+                        }
+
+                        if collectionModel.isXMode {
+                            VStack(alignment: .leading, spacing: 8) {
+                                Text(language.text("X에서 가져올 목록", "X collections")).font(.subheadline).foregroundStyle(.secondary)
+                                HStack(spacing: 20) {
+                                    Toggle(language.text("좋아요", "Likes"), isOn: xCollectionBinding(.xLikes)).toggleStyle(.checkbox)
+                                    Toggle(language.text("북마크", "Bookmarks"), isOn: xCollectionBinding(.xBookmarks)).toggleStyle(.checkbox)
+                                }
+                                Text(language.text(
+                                    "좋아요와 북마크에 같은 항목이 있어도 한 번만 다운로드합니다.",
+                                    "If the same item appears in both Likes and Bookmarks, ClipBox downloads it only once."
+                                ))
+                                    .font(.caption).foregroundStyle(.secondary)
+                            }
+                        }
+
+                        if collectionModel.requiresXAccountName {
+                            VStack(alignment: .leading, spacing: 8) {
+                                Text(language.text("X 사용자 이름", "Your X username"))
+                                HStack(spacing: 4) {
+                                    Text("@").foregroundStyle(.secondary)
+                                    TextField(language.text("사용자 이름", "username"), text: xHandleBinding).textFieldStyle(.roundedBorder)
+                                }.frame(maxWidth: 360)
+                                Text(language.text("선택한 브라우저에서 로그인한 X 계정의 사용자 이름을 입력하세요.", "Enter the username of the X account signed in to the selected browser."))
+                                    .font(.caption).foregroundStyle(.secondary)
+                                Toggle(language.text("이 Mac에 사용자 이름 기억하기", "Remember username on this Mac"), isOn: $collectionModel.rememberAccount).toggleStyle(.checkbox)
+                            }
+                        }
+
+                        Toggle(language.text("처음부터 모두 확인", "Check Full History"), isOn: collectionScanAllBinding)
+                        if collectionModel.scanAll {
+                            Text(collectionModel.isInstagramMode
+                                ? language.text(
+                                    "Instagram의 저장된 기록을 연속해서 확인합니다. 시간이 오래 걸리거나 Instagram에서 일시적으로 요청을 제한할 수 있으므로 자주 반복하지 않는 것을 권장합니다.",
+                                    "ClipBox will check the full Instagram Saved history. This can take a long time, and Instagram may temporarily limit requests, so avoid running it frequently."
+                                )
+                                : language.text(
+                                    "전체 기록을 확인합니다. 시간이 오래 걸리거나 X에서 일시적으로 가져오기가 제한될 수 있으므로 자주 반복하지 않는 것을 권장합니다.",
+                                    "ClipBox will check the full available history. This can take a long time, and X may temporarily limit imports, so avoid running it frequently."
+                                ))
+                                .font(.caption).foregroundStyle(.secondary)
+                        }
+
+                        if !collectionModel.scanAll && collectionModel.isXMode {
+                            Text(language.text(
+                                "최근 항목부터 한 묶음씩 불러옵니다. 더 보고 싶을 때만 추가로 불러오며, 바로 다운로드하면 이미 확인한 목록을 그대로 사용합니다.",
+                                "ClipBox starts with recent items. Load more only when you want to see further back; downloading reuses the list you've already checked."
+                            ))
+                                .font(.caption).foregroundStyle(.secondary)
+                        } else if !collectionModel.scanAll {
+                            ScanLimitControl(value: $collectionModel.scanLimit)
+                        }
+
+                        LabeledContent(language.text("저장할 폴더", "Save to")) {
+                            HStack(spacing: 10) {
+                                Text(collectionModel.outputDirectory.path)
+                                    .lineLimit(1)
+                                    .truncationMode(.middle)
+                                    .foregroundStyle(.secondary)
+                                Button(language.text("변경…", "Choose…")) {
+                                    chooseCollectionOutputDirectory()
+                                }
+                            }
+                        }
+                    }
+                    .padding(6)
+                    .disabled(collectionModel.isWorking)
+                }
+
+                Text(language.text("ClipBox는 선택한 브라우저의 로그인 상태를 그때그때 사용하며, 로그인 정보를 따로 저장하지 않습니다.", "ClipBox uses the selected browser's sign-in when needed and doesn't save your login details separately."))
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+
+                if collectionModel.isXMode && !collectionModel.hasSelectedCollections {
+                    Label(language.text("좋아요나 북마크를 하나 이상 선택해 주세요.", "Select Likes, Bookmarks, or both."), systemImage: "exclamationmark.triangle")
+                        .font(.caption)
+                        .foregroundStyle(.orange)
+                }
+
+                if !collectionModel.hasSelectedMediaTypes {
+                    Label(language.text("다운로드할 파일 종류를 하나 이상 선택해 주세요.", "Select at least one file type."), systemImage: "exclamationmark.triangle")
+                        .font(.caption)
+                        .foregroundStyle(.orange)
+                }
+
+                if !collectionModel.hasRequiredXAccountName {
+                    Label(language.text("좋아요를 가져오려면 X 사용자 이름을 입력해 주세요.", "Enter the X username to import Likes."), systemImage: "exclamationmark.triangle")
+                        .font(.caption)
+                        .foregroundStyle(.orange)
+                }
+
+                if let scanResult = collectionModel.scanResult {
+                    GroupBox(language.text("확인한 항목", "Checked Items")) {
+                        VStack(alignment: .leading, spacing: 8) {
+                            Text(language.text(
+                                "항목 \(scanResult.uniqueMediaCount)개 · 새 항목 \(scanResult.unarchivedCount)개",
+                                "\(scanResult.uniqueMediaCount) items · \(scanResult.unarchivedCount) new"
+                            ))
+                                .font(.headline)
+
+                            ForEach(scanResult.collections) { collection in
+                                Text(language.text("\(collectionName(collection)): \(scanResult.items.filter { $0.collections.contains(collection) }.count)개", "\(collectionName(collection)): \(scanResult.items.filter { $0.collections.contains(collection) }.count) items"))
+                                    .font(.caption).foregroundStyle(.secondary)
+                            }
+
+                            if let comparison = collectionModel.comparison {
+                                Text(language.text("확인: \(comparison.current.capturedAt.formatted())", "Checked \(comparison.current.capturedAt.formatted())"))
+                                    .font(.caption)
+                                Text(language.text(
+                                    "이 비교는 현재 브라우저 프로필과 확인 범위를 기준으로 합니다. 이번 목록에 없다고 해서 사이트에서 삭제된 것으로 판단하지 않습니다.",
+                                    "This comparison uses the current browser profile and check range. An item missing from this list isn't assumed to be deleted from the site."
+                                ))
+                                    .font(.caption).foregroundStyle(.secondary)
+                                if let previousDate = comparison.previousDate {
+                                    Text(language.text(
+                                        "이전 확인 \(previousDate.formatted()): 새로 보인 항목 \(comparison.added)개 · 이번에는 보이지 않은 항목 \(comparison.notReturned.count)개",
+                                        "Compared with \(previousDate.formatted()): \(comparison.added) newly found · \(comparison.notReturned.count) not returned this time"
+                                    ))
+                                        .font(.caption)
+                                }
+                                DisclosureGroup(language.text("가져온 범위 자세히 보기", "Details About This Check")) {
+                                    if scanResult.duplicateOccurrencesCollapsed > 0 {
+                                        Text(language.text(
+                                            "여러 목록에 겹쳐 있던 항목 \(scanResult.duplicateOccurrencesCollapsed)개를 한 번만 표시했습니다.",
+                                            "Merged \(scanResult.duplicateOccurrencesCollapsed) overlapping collection entries."
+                                        ))
+                                            .font(.caption)
+                                            .foregroundStyle(.secondary)
+                                    }
+                                    ForEach(comparison.current.diagnostics, id: \.collection) { diagnostic in
+                                        Text("\(diagnostic.collection): \(diagnostic.pages) page responses · \(diagnostic.entries) entries · \(diagnostic.stopDescription)")
+                                            .font(.caption).foregroundStyle(.secondary)
+                                    }
+                                    if comparison.current.diagnostics.isEmpty {
+                                        Text(language.text("이 환경에서는 가져온 범위의 세부 정보를 볼 수 없습니다.", "Details about the loaded range aren't available here."))
+                                            .font(.caption).foregroundStyle(.secondary)
+                                    }
+                                }
+                                DisclosureGroup(language.text("특정 X 게시물 찾기", "Find a Specific X Post")) {
+                                    TextField(language.text("X 게시물 주소 붙여넣기", "Paste an X post URL"), text: $collectionModel.comparisonPostURL)
+                                        .textFieldStyle(.roundedBorder)
+                                    if let message = collectionModel.postComparisonMessage {
+                                        Text(message).font(.caption).textSelection(.enabled)
+                                    }
+                                }
+                                Picker(language.text("목록", "Collection"), selection: $collectionModel.previewCollection) {
+                                    ForEach(scanResult.collections) { collection in
+                                        Text(collectionName(collection)).tag(collection)
+                                    }
+                                }
+                                Text(language.text(
+                                    "X에서 보여 준 순서를 그대로 따릅니다. 게시 날짜순이 아닙니다.",
+                                    "This follows the order returned by X; it is not publication-date order."
+                                ))
+                                    .font(.caption).foregroundStyle(.secondary)
+                                if collectionModel.isPagedXPreview {
+                                    LazyVStack(alignment: .leading, spacing: 10) {
+                                        ForEach(collectionModel.observedRows) { item in observationRow(item) }
+                                    }
+                                    if collectionModel.currentPreviewHasMore {
+                                        Button(language.text("더 불러오기", "Load More")) {
+                                            collectionModel.loadNextXPreviewPage()
+                                        }
+                                        .disabled(collectionModel.isWorking)
+                                    } else {
+                                        Text(language.text("끝까지 불러왔습니다.", "Reached the end."))
+                                            .font(.caption).foregroundStyle(.secondary)
+                                    }
+                                    Text(language.text(
+                                        "현재 \(collectionModel.currentPreviewPageResponses)묶음 · 항목 \(collectionModel.observedRows.count)개 · \(collectionModel.currentPreviewHasMore ? "더 불러올 수 있음" : "끝까지 확인함")",
+                                        "\(collectionModel.currentPreviewPageResponses) batch(es) · \(collectionModel.observedRows.count) items · \(collectionModel.currentPreviewHasMore ? "more available" : "reached the end")"
+                                    ))
+                                        .font(.caption).foregroundStyle(.secondary)
+                                } else {
+                                    LazyVStack(alignment: .leading, spacing: 10) {
+                                        ForEach(collectionModel.observedRows.prefix(collectionModel.previewRowLimit)) { item in
+                                            observationRow(item)
+                                        }
+                                    }
+                                    if collectionModel.observedRows.count > collectionModel.previewRowLimit {
+                                        Button(language.text("다음 50개 보기", "Show Next 50")) { collectionModel.previewRowLimit += 50 }
+                                    }
+                                    Text(language.text(
+                                        "찾은 항목 \(collectionModel.observedRows.count)개 중 \(min(collectionModel.previewRowLimit, collectionModel.observedRows.count))개를 보여 주고 있습니다. 다운로드하면 확인한 전체 항목을 대상으로 합니다.",
+                                        "Showing \(min(collectionModel.previewRowLimit, collectionModel.observedRows.count)) of \(collectionModel.observedRows.count) items. Downloading uses the full checked list."
+                                    ))
+                                        .font(.caption).foregroundStyle(.secondary)
+                                }
+                                if !comparison.notReturned.isEmpty {
+                                    DisclosureGroup(language.text("이전에는 있었지만 이번 목록에는 없는 항목 (최대 50개)", "Items Seen Before but Not in This List (up to 50)")) {
+                                        ForEach(comparison.notReturned.prefix(50)) { item in observationRow(item) }
+                                    }
+                                }
+                            }
+                            if let warning = collectionModel.snapshotWarning {
+                                Text(warning).foregroundStyle(.orange)
+                            }
+                        }
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                        .padding(6)
+                    }
+                }
+
+                if collectionModel.isWorking, let progress = collectionModel.syncProgress {
+                    GroupBox(language.text("진행 상황", "Progress")) {
+                        VStack(alignment: .leading, spacing: 8) {
+                            HStack {
+                                Text(collectionProgressStage(progress.stage)).font(.headline)
+                                Spacer()
+                                if let total = progress.totalItems {
+                                    Text("\(progress.completedItems)/\(total)").monospacedDigit()
+                                } else if progress.completedItems > 0 {
+                                    Text("\(progress.completedItems)").monospacedDigit()
+                                }
+                            }
+                            if let total = progress.totalItems, total > 0 {
+                                ProgressView(value: Double(progress.completedItems), total: Double(total))
+                            } else {
+                                ProgressView()
+                            }
+                            Text(language.text(
+                                "다운로드 \(progress.downloaded) · 이미 저장됨 \(progress.skippedAlreadyArchived) · 실패 \(progress.failed)",
+                                "Downloaded \(progress.downloaded) · already saved \(progress.skippedAlreadyArchived) · failed \(progress.failed)"
+                            ))
+                                .font(.caption).foregroundStyle(.secondary)
+                            if let message = progress.message, !message.isEmpty {
+                                Text(message).font(.caption).foregroundStyle(.secondary)
+                            }
+                        }
+                        .padding(6)
+                    }
+                }
+
+                if let syncResult = collectionModel.syncResult {
+                    GroupBox(language.text("마지막 다운로드", "Last Download")) {
+                        VStack(alignment: .leading, spacing: 10) {
+                            Grid(alignment: .leading, horizontalSpacing: 18, verticalSpacing: 6) {
+                                GridRow { Text(language.text("확인한 항목", "Checked items")).foregroundStyle(.secondary); Text("\(syncResult.scannedOccurrences)") }
+                                GridRow { Text(language.text("찾은 항목", "Items found")).foregroundStyle(.secondary); Text("\(syncResult.uniqueMedia)") }
+                                GridRow { Text(language.text("중복 제외", "Duplicates skipped")).foregroundStyle(.secondary); Text("\(syncResult.duplicatesCollapsed)") }
+                                GridRow { Text(language.text("새 항목", "New items")).foregroundStyle(.secondary); Text("\(syncResult.unarchived)") }
+                                GridRow { Text(language.text("다운로드 시도", "Download attempts")).foregroundStyle(.secondary); Text("\(syncResult.attempted)") }
+                                GridRow { Text(language.text("다운로드", "Downloaded")).foregroundStyle(.secondary); Text("\(syncResult.downloaded)") }
+                                GridRow { Text(language.text("이미 저장됨", "Already saved")).foregroundStyle(.secondary); Text("\(syncResult.skippedAlreadyArchived)") }
+                                GridRow { Text(language.text("실패", "Failed")).foregroundStyle(.secondary); Text("\(syncResult.failed)") }
+                                if syncResult.remaining > 0 {
+                                    GridRow { Text(language.text("아직 남은 항목", "Still remaining")).foregroundStyle(.secondary); Text("\(syncResult.remaining)") }
+                                }
+                            }
+                            if let reason = syncResult.stoppedReason {
+                                Label(language.text("작업이 중단되었습니다: \(reason)", "Work stopped: \(reason)"), systemImage: "pause.circle")
+                                    .font(.caption).foregroundStyle(.secondary)
+                            }
+                            if !syncResult.failures.isEmpty {
+                                Divider()
+                                Text(language.text("실패한 항목", "Failed items")).font(.headline)
+                                ForEach(syncResult.failures) { failure in
+                                    VStack(alignment: .leading, spacing: 3) {
+                                        Text(failure.title ?? failure.mediaID).font(.callout)
+                                        Text(failure.error).font(.caption).foregroundStyle(.secondary).textSelection(.enabled)
+                                        if let value = failure.sourceURL, let url = URL(string: value), url.scheme == "https" {
+                                            Link(language.text("원문 열기", "Open original"), destination: url).font(.caption)
+                                        }
+                                    }
+                                }
+                                Button(language.text("실패 항목 다시 시도", "Retry Failed Items")) {
+                                    collectionModel.retryFailures()
+                                }
+                                .disabled(!collectionModel.canRetryFailures)
+                            }
+                        }
+                        .padding(6)
+                    }
+                }
+
+                if !collectionModel.statusMessage.isEmpty,
+                   collectionModel.isWorking || (collectionModel.scanResult == nil && collectionModel.syncResult == nil) {
+                    Text(collectionModel.statusMessage)
+                        .font(.callout)
+                        .foregroundStyle(.secondary)
+                }
+
+                if let errorMessage = collectionModel.errorMessage {
+                    Label(errorMessage, systemImage: "exclamationmark.triangle.fill")
+                        .foregroundStyle(.red)
+                        .textSelection(.enabled)
+                }
+            }
+            .frame(maxWidth: 820, alignment: .leading)
+            .padding(24)
+            .frame(maxWidth: .infinity, alignment: .top)
+        }
+        .safeAreaInset(edge: .bottom) {
+            collectionActions
+                .frame(maxWidth: 820)
+                .padding(.horizontal, 24).padding(.vertical, 12)
+                .frame(maxWidth: .infinity)
+                .background(.bar)
+        }
+        .navigationTitle(language.text("저장한 항목", "Saved Items"))
+        .alert(
+            language.text("처음부터 모두 확인할까요?", "Check everything from the beginning?"),
+            isPresented: $showFullScanConfirmation
+        ) {
+            Button(language.text("취소", "Cancel"), role: .cancel) {}
+            Button(language.text("처음부터 모두 확인", "Check Full History")) {
+                collectionModel.scanAll = true
+            }
+        } message: {
+            Text(collectionModel.isInstagramMode
+                ? language.text(
+                    "Instagram에 저장된 항목을 처음부터 계속 불러옵니다. 시간이 오래 걸릴 수 있고 Instagram에서 일시적으로 요청을 제한할 수 있습니다. 처음 가져오거나 빠진 항목이 있는지 확인할 때 사용하는 것을 권장합니다.",
+                    "ClipBox will load Instagram Saved items from the beginning. This can take a long time, and Instagram may temporarily limit requests. It's best for a first download or an occasional check for missing items."
+                )
+                : language.text(
+                    "X의 좋아요와 북마크를 처음부터 계속 불러옵니다. 시간이 오래 걸릴 수 있고 X에서 일시적으로 요청을 제한할 수 있습니다. 처음 가져오거나 빠진 항목이 있는지 확인할 때만 사용하고, 평소에는 최근 항목부터 확인하는 것을 권장합니다.",
+                    "ClipBox will load X Likes and Bookmarks from the beginning. This can take a long time, and X may temporarily limit requests. It's best for a first download or an occasional check for missing items; for everyday use, start with recent items."
+                ))
+        }
+    }
+
+    private func collectionProgressStage(_ stage: CollectionSyncStage) -> String {
+        switch stage {
+        case .preparing: language.text("준비 중", "Preparing")
+        case .listing: language.text("목록 불러오는 중", "Loading list")
+        case .downloading: language.text("다운로드 중", "Downloading")
+        case .completed: language.text("완료", "Completed")
+        case .stopped: language.text("중단됨", "Stopped")
+        }
+    }
+
+    private var privateAdaptersView: some View {
+        ScrollView {
+            VStack(alignment: .leading, spacing: 20) {
+                VStack(alignment: .leading, spacing: 8) {
+                    Text(language.text("개인 사이트", "Private Sites"))
+                        .font(.largeTitle)
+                        .fontWeight(.semibold)
+                    Text(language.text(
+                        "기본 지원 목록에 없는 사이트를 이 Mac에서만 연결할 수 있습니다.",
+                        "Connect sites that aren't built into ClipBox, only on this Mac."
+                    ))
+                        .foregroundStyle(.secondary)
+                }
+
+                Label(
+                    language.text(
+                        "여기서 만드는 연결은 이 Mac에서 실행되는 로컬 코드입니다. 신뢰할 수 있는 코드만 사용하세요.",
+                        "Private-site connections run as local code on this Mac. Use only code you trust."
+                    ),
+                    systemImage: "exclamationmark.shield"
+                )
+                .font(.callout)
+                .foregroundStyle(.secondary)
+
+                GroupBox(language.text("새 연결 만들기", "Create a Connection")) {
+                    VStack(alignment: .leading, spacing: 10) {
+                        HStack {
+                            TextField(language.text("연결 이름", "Connection name"), text: $privateAdapterModel.newAdapterID)
+                                .textFieldStyle(.roundedBorder)
+                            Button(language.text("연결 만들기", "Create Connection")) {
+                                privateAdapterModel.createScaffold()
+                            }
+                            .disabled(privateAdapterModel.isWorking)
+                        }
+                        Text(language.text(
+                            "파일은 ClipBox의 Application Support 폴더에만 만들어집니다.",
+                            "Files are created only in ClipBox's Application Support folder."
+                        ))
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                    }
+                    .padding(6)
+                }
+
+                if privateAdapterModel.adapters.isEmpty {
+                    GroupBox {
+                        HStack(alignment: .top, spacing: 12) {
+                            Image(systemName: "puzzlepiece.extension")
+                                .font(.title2)
+                                .foregroundStyle(.secondary)
+                            VStack(alignment: .leading, spacing: 4) {
+                                Text(language.text("아직 연결이 없습니다", "No Connections Yet"))
+                                    .font(.headline)
+                                Text(language.text(
+                                    "위에서 연결 이름을 입력해 새 연결을 만든 뒤, 필요한 사이트 연결 코드를 이 Mac에서 설정하세요.",
+                                    "Enter a connection name above, create it, then configure the site-specific code on this Mac."
+                                ))
+                                    .foregroundStyle(.secondary)
+                            }
+                            Spacer()
+                        }
+                        .padding(8)
+                    }
+                } else {
+                    GroupBox(language.text("연결", "Connection")) {
+                        Form {
+                            Picker(
+                                language.text("연결", "Connection"),
+                                selection: Binding(
+                                    get: { privateAdapterModel.selectedAdapterID },
+                                    set: { privateAdapterModel.selectAdapter($0) }
+                                )
+                            ) {
+                                ForEach(privateAdapterModel.adapters) { adapter in
+                                    Text(adapter.displayName)
+                                        .tag(Optional(adapter.id))
+                                }
+                            }
+
+                            Picker(language.text("가져올 목록", "List to download"), selection: $privateAdapterModel.selectedCollectionID) {
+                                ForEach(privateAdapterModel.availableCollections) { collection in
+                                    Text(collection.displayName).tag(collection.id)
+                                }
+                            }
+
+                            Picker(language.text("로그인할 브라우저", "Signed-in browser"), selection: $privateAdapterModel.browser) {
+                                ForEach(BrowserCookieSource.allCases, id: \.self) { browser in
+                                    Text(browser.displayName).tag(browser)
+                                }
+                            }
+
+                            Toggle(language.text("처음부터 모두 확인", "Check Full History"), isOn: $privateAdapterModel.scanAll)
+                            if !privateAdapterModel.scanAll {
+                                ScanLimitControl(value: $privateAdapterModel.scanLimit)
+                            }
+
+                            LabeledContent(language.text("저장할 폴더", "Save to")) {
+                                HStack(spacing: 10) {
+                                    Text(privateAdapterModel.outputDirectory.path)
+                                        .lineLimit(1)
+                                        .truncationMode(.middle)
+                                        .foregroundStyle(.secondary)
+                                    Button(language.text("변경…", "Choose…")) {
+                                        choosePrivateAdapterOutputDirectory()
+                                    }
+                                }
+                            }
+                        }
+                        .padding(6)
+                    }
+
+                    HStack {
+                        Button(language.text("폴더 열기", "Open Folder")) {
+                            Task {
+                                if let url = await privateAdapterModel.selectedDirectoryURL() {
+                                    NSWorkspace.shared.activateFileViewerSelecting([url])
+                                }
+                            }
+                        }
+                        Button(language.text("연결 확인", "Check Connection")) {
+                            privateAdapterModel.doctor()
+                        }
+                        Button(language.text("항목 확인", "Check Items")) {
+                            privateAdapterModel.preview()
+                        }
+                        .disabled(!privateAdapterModel.canRun)
+
+                        Spacer()
+                        if privateAdapterModel.isWorking {
+                            ProgressView()
+                                .controlSize(.small)
+                        }
+                        Button(language.text("새 항목 다운로드", "Download New Items")) {
+                            privateAdapterModel.sync()
+                        }
+                        .buttonStyle(.borderedProminent)
+                        .disabled(!privateAdapterModel.canRun)
+                    }
+
+                    DisclosureGroup(language.text("연결 세부 정보", "Connection Details")) {
+                        Text(language.text(
+                            "ClipBox는 각 개인 사이트 연결의 다운로드 기록을 따로 관리해 서로 다른 사이트의 항목이 섞이지 않도록 합니다.",
+                            "ClipBox keeps download history separate for each private-site connection so items from different sites don't get mixed together."
+                        ))
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                    }
+
+                    if let scanResult = privateAdapterModel.scanResult {
+                        GroupBox(language.text("확인한 항목", "Checked Items")) {
+                            VStack(alignment: .leading, spacing: 8) {
+                                Text(language.text(
+                                    "확인한 항목 \(scanResult.items.count)개 · 새 항목 \(scanResult.unarchivedCount)개",
+                                    "\(scanResult.items.count) checked · \(scanResult.unarchivedCount) new"
+                                ))
+                                    .font(.headline)
+                                ForEach(scanResult.items.prefix(50)) { item in
+                                    HStack(spacing: 8) {
+                                        Image(systemName: item.alreadyDownloaded ? "checkmark.circle.fill" : "arrow.down.circle")
+                                            .foregroundStyle(item.alreadyDownloaded ? .secondary : .primary)
+                                        VStack(alignment: .leading, spacing: 2) {
+                                            Text(item.item.title ?? language.text("제목 없음", "Untitled"))
+                                                .lineLimit(1)
+                                        }
+                                        Spacer()
+                                        Text(item.alreadyDownloaded
+                                            ? language.text("이미 저장됨", "Already Saved")
+                                            : (item.previouslySeen ? language.text("전에 확인함", "Seen Before") : language.text("새 항목", "New")))
+                                            .font(.caption)
+                                            .foregroundStyle(.secondary)
+                                    }
+                                }
+                            }
+                            .frame(maxWidth: .infinity, alignment: .leading)
+                            .padding(6)
+                        }
+                    }
+
+                    if let syncResult = privateAdapterModel.syncResult {
+                        GroupBox(language.text("마지막 다운로드", "Last Download")) {
+                            Grid(alignment: .leading, horizontalSpacing: 18, verticalSpacing: 6) {
+                                GridRow { Text(language.text("확인한 항목", "Checked")).foregroundStyle(.secondary); Text("\(syncResult.scanned)") }
+                                GridRow { Text(language.text("새 항목", "New items")).foregroundStyle(.secondary); Text("\(syncResult.unarchived)") }
+                                GridRow { Text(language.text("다운로드", "Downloaded")).foregroundStyle(.secondary); Text("\(syncResult.downloaded)") }
+                                GridRow { Text(language.text("이미 저장됨", "Already saved")).foregroundStyle(.secondary); Text("\(syncResult.skippedAlreadyArchived)") }
+                                GridRow { Text(language.text("실패", "Failed")).foregroundStyle(.secondary); Text("\(syncResult.failed)") }
+                            }
+                            .padding(6)
+                        }
+                    }
+                }
+
+                if !privateAdapterModel.statusMessage.isEmpty {
+                    Text(privateAdapterModel.statusMessage)
+                        .font(.callout)
+                        .foregroundStyle(.secondary)
+                        .textSelection(.enabled)
+                }
+                if let errorMessage = privateAdapterModel.errorMessage {
+                    Label(errorMessage, systemImage: "exclamationmark.triangle.fill")
+                        .foregroundStyle(.red)
+                        .textSelection(.enabled)
+                }
+            }
+            .frame(maxWidth: 820, alignment: .leading)
+            .padding(28)
+            .frame(maxWidth: .infinity, alignment: .top)
+        }
+        .navigationTitle(language.text("개인 사이트", "Private Sites"))
+    }
+
+    private func chooseOutputDirectory() {
+        let panel = NSOpenPanel()
+        panel.title = language.text("다운로드 폴더 선택", "Choose Download Folder")
+        panel.canChooseFiles = false
+        panel.canChooseDirectories = true
+        panel.allowsMultipleSelection = false
+        panel.canCreateDirectories = true
+        panel.directoryURL = model.outputDirectory
+
+        if panel.runModal() == .OK, let selectedURL = panel.url {
+            model.setOutputDirectory(selectedURL)
+        }
+    }
+
+    private func chooseCollectionOutputDirectory() {
+        let panel = NSOpenPanel()
+        panel.title = language.text("저장할 폴더 선택", "Choose Download Folder")
+        panel.canChooseFiles = false
+        panel.canChooseDirectories = true
+        panel.allowsMultipleSelection = false
+        panel.canCreateDirectories = true
+        panel.directoryURL = collectionModel.outputDirectory
+
+        if panel.runModal() == .OK, let selectedURL = panel.url {
+            collectionModel.setOutputDirectory(selectedURL)
+        }
+    }
+
+    private func mediaTypeBinding(_ type: MediaAssetType) -> Binding<Bool> {
+        Binding(
+            get: { collectionModel.isMediaTypeEnabled(type) },
+            set: { collectionModel.setMediaType(type, enabled: $0) }
+        )
+    }
+
+    private var collectionSourceBinding: Binding<CollectionSourceMode> {
+        Binding(
+            get: { collectionModel.selectedSource },
+            set: { collectionModel.setSource($0) }
+        )
+    }
+
+    private var collectionScanAllBinding: Binding<Bool> {
+        Binding(
+            get: { collectionModel.scanAll },
+            set: { enabled in
+                if enabled && collectionModel.usesGalleryBrowserSession {
+                    showFullScanConfirmation = true
+                } else {
+                    collectionModel.scanAll = enabled
+                }
+            }
+        )
+    }
+
+    private func xCollectionBinding(_ collection: BuiltInCollection) -> Binding<Bool> {
+        Binding(
+            get: { collectionModel.isXCollectionEnabled(collection) },
+            set: { collectionModel.setXCollection(collection, enabled: $0) }
+        )
+    }
+
+    private var xHandleBinding: Binding<String> {
+        Binding(
+            get: { collectionModel.xAccountName },
+            set: { collectionModel.setXAccountName($0) }
+        )
+    }
+
+    private func collectionMembershipLabel(_ collections: [BuiltInCollection]) -> String {
+        collections.map { collection in
+            switch collection {
+            case .xLikes: language.text("좋아요", "Likes")
+            case .xBookmarks: language.text("북마크", "Bookmarks")
+            case .instagramSaved: language.text("Instagram 저장됨", "Instagram Saved")
+            case .youtubeLiked: language.text("YouTube 좋아요", "YouTube Likes")
+            case .youtubeWatchLater: language.text("나중에 볼 동영상", "Watch Later")
+            }
+        }.joined(separator: " + ")
+    }
+
+    private func choosePrivateAdapterOutputDirectory() {
+        let panel = NSOpenPanel()
+        panel.title = language.text("개인 사이트 다운로드 폴더 선택", "Choose Private Site Download Folder")
+        panel.canChooseFiles = false
+        panel.canChooseDirectories = true
+        panel.allowsMultipleSelection = false
+        panel.canCreateDirectories = true
+        panel.directoryURL = privateAdapterModel.outputDirectory
+
+        if panel.runModal() == .OK, let selectedURL = panel.url {
+            privateAdapterModel.setOutputDirectory(selectedURL)
+        }
+    }
+
+    private func collectionSourceName(_ source: CollectionSourceMode) -> String {
+        switch source {
+        case .xCollections: language.text("X 좋아요 · 북마크", "X Likes & Bookmarks")
+        case .instagramSaved: language.text("Instagram 저장됨 동영상", "Instagram Saved Videos")
+        case .youtubeLiked: language.text("YouTube 좋아요 표시한 동영상", "YouTube Liked Videos")
+        case .youtubeWatchLater: language.text("YouTube 나중에 볼 동영상", "YouTube Watch Later")
+        }
+    }
+
+    private func mediaTypeName(_ type: MediaAssetType) -> String {
+        switch type {
+        case .video: language.text("동영상", "Videos")
+        case .photo: language.text("사진", "Photos")
+        case .animated: language.text("움직이는 이미지", "Animated")
+        }
+    }
+
+    private func collectionName(_ collection: BuiltInCollection) -> String {
+        switch collection {
+        case .xLikes: language.text("X 좋아요", "X Likes")
+        case .xBookmarks: language.text("X 북마크", "X Bookmarks")
+        case .instagramSaved: language.text("Instagram 저장됨", "Instagram Saved")
+        case .youtubeLiked: language.text("YouTube 좋아요", "YouTube Likes")
+        case .youtubeWatchLater: language.text("YouTube 나중에 볼 동영상", "YouTube Watch Later")
+        }
+    }
+
+    private func historyStatus(_ status: ArchiveStatus) -> String {
+        switch status {
+        case .discovered: language.text("확인만 함", "Checked")
+        case .downloading: language.text("다운로드 중", "Downloading")
+        case .downloaded: language.text("다운로드됨", "Downloaded")
+        case .failed: language.text("실패", "Failed")
+        }
+    }
+
+    private func historyDate(_ value: String?) -> String? {
+        guard let value, let date = ISO8601DateFormatter().date(from: value) else { return nil }
+        return date.formatted(date: .abbreviated, time: .shortened)
+    }
+
+    private func discoveryIssueMessage(_ issue: BrowserSessionDiscoveryIssue) -> String {
+        guard language.language == .korean else { return issue.message }
+        switch issue.kind {
+        case .enumerationPermissionDenied:
+            return "macOS가 브라우저 프로필 목록 접근을 허용하지 않았습니다. ClipBox의 개인정보 보호 권한을 확인해 주세요."
+        case .fileReadPermissionDenied:
+            return "브라우저 프로필은 찾았지만 로그인 정보에 접근할 권한이 없습니다."
+        case .unsupportedFormat:
+            return "이 Safari 프로필의 로그인 저장 형식은 현재 지원하지 않습니다."
+        case .metadataPermissionDenied, .metadataUnreadable:
+            return "Safari 프로필 이름을 확인하지 못했습니다. 이름을 알 수 없는 프로필도 선택해서 사용할 수 있습니다."
+        }
+    }
+
+    private func sessionCheckMessage(_ check: BrowserSessionCheck) -> String {
+        guard language.language == .korean else { return check.message }
+        if check.connected, let identity = check.identity, identity.evidence == .serverVerified {
+            return identity.handle.map { "X 계정 @\($0)에 정상적으로 연결되었습니다." } ?? "X 계정 연결을 확인했습니다."
+        }
+        if check.connected {
+            return "X 로그인 상태는 확인했지만 계정 정보까지 확인하지 못했습니다."
+        }
+        return "이 프로필에서 사용할 수 있는 X 로그인을 찾지 못했습니다. X에 로그인한 프로필인지 확인해 주세요."
+    }
+
+    private func resolution(_ media: MediaMetadata) -> String {
+        guard let width = media.width, let height = media.height else {
+            return language.text("알 수 없음", "Unknown")
+        }
+        return "\(width)x\(height)"
+    }
+}
+
+private struct ScanLimitControl: View {
+    @EnvironmentObject private var language: AppLanguageStore
+    @Binding var value: Int
+    var body: some View {
+        VStack(alignment: .leading, spacing: 6) {
+            Text(language.text("최근 항목부터 확인", "Check Recent Items First"))
+            HStack {
+                TextField(language.text("개수", "Count"), value: $value, format: .number.grouping(.never))
+                    .textFieldStyle(.roundedBorder)
+                    .frame(width: 100)
+                    .accessibilityLabel(language.text("확인할 최근 항목 개수", "Number of newest items to scan"))
+                    .onChange(of: value) { _, count in
+                        value = min(1_000_000, max(1, count))
+                    }
+                Stepper(language.text("개수 조절", "Adjust count"), value: $value, in: 1...1_000_000)
+                    .labelsHidden()
+                Menu(language.text("개수 선택", "Choose Count")) {
+                    ForEach([100, 500, 1000, 5000], id: \.self) { count in
+                        Button(String(count)) { value = count }
+                    }
+                }.fixedSize()
+            }
+            Text(language.text(
+                "숫자를 직접 입력하거나 자주 쓰는 개수를 고를 수 있습니다. 처음부터 전부 보려면 ‘처음부터 모두 확인’을 켜세요.",
+                "Enter a number or choose a common amount. Turn on Check Full History to go all the way back."
+            ))
+                .font(.caption).foregroundStyle(.secondary)
+        }
+    }
+}

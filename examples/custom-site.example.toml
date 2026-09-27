@@ -1,0 +1,11 @@
+# Synthetic example only. Real private profiles belong outside the Git repository.
+
+[site]
+name = "Example Media Site"
+host = "media.example.invalid"
+
+[collections.favorites]
+path = "/account/favorites"
+
+[media]
+strategy = "generic"

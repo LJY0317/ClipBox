@@ -1,0 +1,68 @@
+# OS / editors
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/
+*.swp
+*.swo
+
+# Swift / Xcode build artifacts
+.build/
+.swiftpm/
+dist/
+DerivedData/
+*.xcuserstate
+xcuserdata/
+*.xccheckout
+*.xcscmblueprint
+
+# Environment and secrets
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+*.p12
+*.pfx
+
+# Authentication/session material
+*cookies*.txt
+*.cookies
+*.cookies.json
+*session*.json
+*session*.txt
+
+# Runtime databases and history
+*.sqlite
+*.sqlite3
+*.sqlite3-*
+*.db
+*.db-*
+*.clipboxbackup
+
+# Logs, downloads, exports, and backups
+*.log
+/downloads/
+/exports/
+/backups/
+/logs/
+
+# Private/local escape hatches. Private data should normally live outside the repo.
+/private/
+/user-data/
+/.clipbox/
+/local-adapters/
+/local-profiles/
+/adapters.local/
+/profiles.local/
+
+# Temporary files
+__pycache__/
+*.py[cod]
+*.tmp
+*.temp
+*.bak
+*.orig
+
+# Local agent handoff/status document
+STATE.md
