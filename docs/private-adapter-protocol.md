@@ -38,7 +38,6 @@ The public machine-readable manifest schema is in `schemas/private-adapter-manif
 - Send human diagnostics to stderr, not stdout.
 - Never print cookies, tokens, passwords, session values, or authorization headers.
 - Exit `0` for a syntactically valid protocol response. Use a non-zero exit code for runtime failure.
-- Do not bypass DRM, paywalls, authorization controls, or other access restrictions.
 - Treat browser/login access as user-authorized local access only.
 
 ClipBox provides these environment variables to the process:
