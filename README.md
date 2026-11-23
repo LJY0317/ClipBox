@@ -79,6 +79,12 @@ For X, the native Collections UI defaults to selecting both Likes and Bookmarks.
 
 Incremental X Preview keeps continuation cursors in process memory only; cursors are not written to preferences, snapshots, diagnostics, or logs. The timeline response already contains a representative media/poster image URL. ClipBox derives a small `pbs.twimg.com` thumbnail URL from that metadata without a post-detail request, then lazily downloads only thumbnails for rows SwiftUI brings into view. Thumbnail requests use an ephemeral, cookie-free URL session, a memory-only cache, and at most three connections per image host. Profile avatars and engagement counters are intentionally not fetched separately because they add little value to archive verification.
 
+Use `clipbox --help` for the command list or add `--help` to a command, for example `clipbox download --help` or `clipbox backup restore --help`. Unknown options are errors.
+
+For scripts, `clipbox session list --json` returns `sessions` and discovery `issues`. `clipbox session check --json` checks X and reports `connected` and `message`, plus `failureKind` when available. A disconnected session exits with code 1.
+
+Both `clipbox sync` and `clipbox adapter sync` exit with code 0 on success, 1 for errors that prevent a result, and 2 when the summary reports failed items or an incomplete run. The summary is still written to standard output with code 2, including when using `--json`. A successful `--dry-run` exits with code 0 even if it finds items to download.
+
 From another working directory, provide the package path explicitly:
 
 ```sh

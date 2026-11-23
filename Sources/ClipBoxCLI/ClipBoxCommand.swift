@@ -6,11 +6,14 @@ private let clipBoxVersion = "0.2.0-dev"
 private enum CLIError: Error, LocalizedError {
     case missingArgument(String)
     case invalidArgument(String)
+    case incompleteSync
 
     var errorDescription: String? {
         switch self {
         case .missingArgument(let message), .invalidArgument(let message):
             message
+        case .incompleteSync:
+            "Sync did not complete."
         }
     }
 }
@@ -20,6 +23,8 @@ struct ClipBoxCommand {
     static func main() async {
         do {
             try await run()
+        } catch CLIError.incompleteSync {
+            exit(2)
         } catch {
             fputs("clipbox: \(error.localizedDescription)\n", stderr)
             exit(1)
@@ -34,17 +39,26 @@ struct ClipBoxCommand {
             arguments.removeFirst()
         }
 
+        if arguments.contains("--help") || arguments.contains("-h") {
+            printHelp(command: command, subcommand: arguments.first)
+            return
+        }
+
         switch command {
         case "--version", "-V", "version":
+            try validatePositionals(arguments, atMost: 0)
             print("ClipBox \(clipBoxVersion)")
 
         case "paths":
+            try validatePositionals(arguments, atMost: 0)
             try printPaths(json: wantsJSON)
 
         case "gui":
+            try validatePositionals(arguments, atMost: 0)
             try launchGUI()
 
         case "status":
+            try validatePositionals(arguments, atMost: 0)
             let service = try ClipBoxService()
             let dependencies = await service.dependencyStatus()
             let historyCount = try await service.historyCount()
@@ -61,7 +75,7 @@ struct ClipBoxCommand {
             try await runDownload(arguments: arguments, json: wantsJSON)
 
         case "session":
-            try await runSession(arguments: arguments)
+            try await runSession(arguments: arguments, json: wantsJSON)
 
         case "scan":
             try await runCollectionScan(arguments: arguments, json: wantsJSON)
@@ -82,6 +96,7 @@ struct ClipBoxCommand {
             try runConfig(arguments: arguments, json: wantsJSON)
 
         case "help", "--help", "-h":
+            try validatePositionals(arguments, atMost: 0)
             printHelp()
 
         default:
@@ -98,6 +113,7 @@ struct ClipBoxCommand {
 
         switch subcommand {
         case "init":
+            try validatePositionals(arguments, atMost: 1)
             guard let id = arguments.first else {
                 throw CLIError.missingArgument("Usage: clipbox adapter init <id>")
             }
@@ -109,6 +125,7 @@ struct ClipBoxCommand {
             print("  next\tAsk an AI coding agent to customize adapter.py using docs/private-adapter-protocol.md")
 
         case "list":
+            try validatePositionals(arguments, atMost: 0)
             let manager = PrivateAdapterManager()
             let manifests = try await manager.list()
             if json {
@@ -123,6 +140,7 @@ struct ClipBoxCommand {
             }
 
         case "path":
+            try validatePositionals(arguments, atMost: 1)
             guard let id = arguments.first else {
                 throw CLIError.missingArgument("Usage: clipbox adapter path <id>")
             }
@@ -130,6 +148,7 @@ struct ClipBoxCommand {
             print(try await manager.directory(id: id).path)
 
         case "doctor":
+            try validatePositionals(arguments, atMost: 1)
             guard let id = arguments.first else {
                 throw CLIError.missingArgument("Usage: clipbox adapter doctor <id> [--json]")
             }
@@ -167,6 +186,7 @@ struct ClipBoxCommand {
                 "Usage: clipbox adapter \(subcommand) <id> <collection> [--browser chrome] [--limit <n>|--all] [--dry-run] [--output <folder>] [--json]"
             )
         }
+        try validatePositionals(Array(arguments.prefix(2)), atMost: 2)
         let adapterID = arguments[0]
         let collection = arguments[1]
         var remaining = Array(arguments.dropFirst(2))
@@ -245,11 +265,13 @@ struct ClipBoxCommand {
                 print("failure\t\(failure.mediaID)\t\(failure.error)")
             }
         }
+        try checkSyncCompletion(failed: result.failed)
     }
 
     private static func runFormats(arguments: [String], json: Bool) async throws {
         var arguments = arguments
         let browser = try parseBrowser(try removeOption("--browser", from: &arguments))
+        try validatePositionals(arguments, atMost: 1)
         guard let url = arguments.first else {
             throw CLIError.missingArgument("Usage: clipbox formats <url> [--browser <browser>] [--json]")
         }
@@ -267,6 +289,7 @@ struct ClipBoxCommand {
         let force = removeFlag("--force", from: &arguments)
         let output = try removeOption("--output", from: &arguments)
         let browser = try parseBrowser(try removeOption("--browser", from: &arguments))
+        try validatePositionals(arguments, atMost: 1)
         guard let url = arguments.first else {
             throw CLIError.missingArgument("Usage: clipbox download <url> [--output <folder>] [--browser <browser>] [--force] [--json]")
         }
@@ -301,11 +324,24 @@ struct ClipBoxCommand {
         }
     }
 
-    private static func runSession(arguments: [String]) async throws {
+    private static func runSession(arguments: [String], json: Bool) async throws {
         var remaining = arguments
         let operation = remaining.isEmpty ? "list" : remaining.removeFirst()
-        if operation == "list", remaining.isEmpty {
+        if operation == "list" {
+            try validatePositionals(remaining, atMost: 0)
             let discovery = BrowserSessionDiscovery.report()
+            if json {
+                let sessions = discovery.sessions.map { session in
+                    ListedSession(
+                        browser: session.browser,
+                        profile: session.profile,
+                        container: session.container,
+                        label: discovery.labels[session.id] ?? session.displayName
+                    )
+                }
+                try printJSON(SessionListPayload(sessions: sessions, issues: discovery.issues))
+                return
+            }
             for session in discovery.sessions {
                 print("\(session.browser.rawValue)\t\(discovery.labels[session.id] ?? session.displayName)")
             }
@@ -325,7 +361,14 @@ struct ClipBoxCommand {
         let result = try await GalleryDlClient().checkSession(
             BrowserSession(browser: browser, profile: profile, container: container), accountName: username
         )
-        print("\(browser.displayName)\t\(result.connected ? "connected" : "not connected")\t\(result.message)")
+        if json {
+            try printJSON(SessionCheckPayload(
+                session: result.session, connected: result.connected, message: result.message,
+                failureKind: result.failureKind?.rawValue, checkedAt: result.checkedAt
+            ))
+        } else {
+            print("\(browser.displayName)\t\(result.connected ? "connected" : "not connected")\t\(result.message)")
+        }
         if !result.connected { throw CLIError.invalidArgument("X session check failed") }
     }
 
@@ -407,11 +450,49 @@ struct ClipBoxCommand {
 
             if json {
                 try printJSON(result)
-                return
+            } else {
+                print("\(collection.displayName) \(result.dryRun ? "preview" : "sync")")
+                print("  scanned\t\(result.scanned)")
+                print("  unarchived\t\(result.unarchived)")
+                print("  downloaded\t\(result.downloaded)")
+                print("  skipped-archived\t\(result.skippedAlreadyArchived)")
+                print("  failed\t\(result.failed)")
+                print("  attempted\t\(result.attempted)")
+                print("  remaining\t\(result.remaining)")
+                if let reason = result.stoppedReason { print("  stopped\t\(reason)") }
+                if result.dryRun {
+                    print("  note\tDry run: no collection checkpoint or downloads were written.")
+                }
+                for failure in result.failures {
+                    print("  failure\t\(failure.mediaID)\t\(failure.error)")
+                    if let sourceURL = failure.sourceURL { print("  source\t\(failure.mediaID)\t\(sourceURL)") }
+                }
             }
+            try checkSyncCompletion(
+                failed: result.failed, remaining: result.dryRun ? 0 : result.remaining,
+                stopped: result.stoppedReason != nil
+            )
+            return
+        }
 
-            print("\(collection.displayName) \(result.dryRun ? "preview" : "sync")")
-            print("  scanned\t\(result.scanned)")
+        let result = try await service.sync(
+            collections: options.collections,
+            accountName: options.accountName,
+            cookiesFromBrowser: options.browser,
+            browserProfile: options.profile,
+            browserContainer: options.container,
+            outputDirectory: outputURL,
+            mediaTypes: options.mediaTypes,
+            limit: options.limit,
+            dryRun: options.dryRun
+        )
+        if json {
+            try printJSON(result)
+        } else {
+            print("\(collectionBatchDisplayName(options.collections)) \(result.dryRun ? "preview" : "sync")")
+            print("  collection-entries\t\(result.scannedOccurrences)")
+            print("  unique-media\t\(result.uniqueMedia)")
+            print("  overlap-merged\t\(result.duplicatesCollapsed)")
             print("  unarchived\t\(result.unarchived)")
             print("  downloaded\t\(result.downloaded)")
             print("  skipped-archived\t\(result.skippedAlreadyArchived)")
@@ -426,42 +507,16 @@ struct ClipBoxCommand {
                 print("  failure\t\(failure.mediaID)\t\(failure.error)")
                 if let sourceURL = failure.sourceURL { print("  source\t\(failure.mediaID)\t\(sourceURL)") }
             }
-            return
         }
-
-        let result = try await service.sync(
-            collections: options.collections,
-            accountName: options.accountName,
-            cookiesFromBrowser: options.browser,
-                browserProfile: options.profile,
-                browserContainer: options.container,
-            outputDirectory: outputURL,
-            mediaTypes: options.mediaTypes,
-            limit: options.limit,
-            dryRun: options.dryRun
+        try checkSyncCompletion(
+            failed: result.failed, remaining: result.dryRun ? 0 : result.remaining,
+            stopped: result.stoppedReason != nil
         )
-        if json {
-            try printJSON(result)
-            return
-        }
+    }
 
-        print("\(collectionBatchDisplayName(options.collections)) \(result.dryRun ? "preview" : "sync")")
-        print("  collection-entries\t\(result.scannedOccurrences)")
-        print("  unique-media\t\(result.uniqueMedia)")
-        print("  overlap-merged\t\(result.duplicatesCollapsed)")
-        print("  unarchived\t\(result.unarchived)")
-        print("  downloaded\t\(result.downloaded)")
-        print("  skipped-archived\t\(result.skippedAlreadyArchived)")
-        print("  failed\t\(result.failed)")
-        print("  attempted\t\(result.attempted)")
-        print("  remaining\t\(result.remaining)")
-        if let reason = result.stoppedReason { print("  stopped\t\(reason)") }
-        if result.dryRun {
-            print("  note\tDry run: no collection checkpoint or downloads were written.")
-        }
-        for failure in result.failures {
-            print("  failure\t\(failure.mediaID)\t\(failure.error)")
-            if let sourceURL = failure.sourceURL { print("  source\t\(failure.mediaID)\t\(sourceURL)") }
+    private static func checkSyncCompletion(failed: Int, remaining: Int = 0, stopped: Bool = false) throws {
+        if failed > 0 || remaining > 0 || stopped {
+            throw CLIError.incompleteSync
         }
     }
 
@@ -478,6 +533,7 @@ struct ClipBoxCommand {
         }
 
         let rawLimit = try removeOption("--limit", from: &arguments)
+        try validatePositionals(arguments, atMost: 0)
         let limit = try rawLimit.map {
             guard let parsed = Int($0), parsed > 0 else {
                 throw CLIError.invalidArgument("--limit must be a positive integer")
@@ -521,15 +577,12 @@ struct ClipBoxCommand {
             format = nil
         }
 
+        try validatePositionals(arguments, atMost: 1)
         guard let path = arguments.first else {
             throw CLIError.missingArgument(
                 "Usage: clipbox history \(subcommand) <file> [--format <jsonl|csv|xlsx>] [--json]"
             )
         }
-        guard arguments.count == 1 else {
-            throw CLIError.invalidArgument("Unexpected history \(subcommand) arguments: \(arguments.dropFirst().joined(separator: " "))")
-        }
-
         let fileURL = URL(
             fileURLWithPath: NSString(string: path).expandingTildeInPath,
             isDirectory: false
@@ -572,6 +625,7 @@ struct ClipBoxCommand {
 
         switch subcommand {
         case "create":
+            try validatePositionals(arguments, atMost: 1)
             let destination = arguments.first.map {
                 URL(
                     fileURLWithPath: NSString(string: $0).expandingTildeInPath,
@@ -590,6 +644,7 @@ struct ClipBoxCommand {
 
         case "restore":
             let restorePreferences = removeFlag("--restore-preferences", from: &arguments)
+            try validatePositionals(arguments, atMost: 1)
             guard let source = arguments.first else {
                 throw CLIError.missingArgument(
                     "Usage: clipbox backup restore <file.clipboxbackup> [--restore-preferences] [--json]"
@@ -624,6 +679,7 @@ struct ClipBoxCommand {
         let subcommand = arguments.first ?? "show"
         switch subcommand {
         case "show":
+            try validatePositionals(Array(arguments.dropFirst()), atMost: 0)
             let preferences = try ClipBoxPreferencesStore.load()
             if json {
                 try printJSON(preferences)
@@ -632,6 +688,7 @@ struct ClipBoxCommand {
             }
 
         case "output":
+            try validatePositionals(Array(arguments.dropFirst()), atMost: 1)
             guard arguments.count >= 2 else {
                 throw CLIError.missingArgument("Usage: clipbox config output <folder|default>")
             }
@@ -693,41 +750,56 @@ struct ClipBoxCommand {
         }
     }
 
-    private static func printHelp() {
-        print("ClipBox \(clipBoxVersion)")
-        print("")
-        print("Native macOS media download and archive toolkit.")
-        print("")
-        print("Usage:")
-        print("  clipbox status [--json]")
-        print("  clipbox gui")
-        print("  clipbox paths [--json]")
-        print("  clipbox formats <url> [--browser <browser>] [--json]")
-        print("  clipbox download <url> [--output <folder>] [--browser <browser>] [--force] [--json]")
-        print("  clipbox scan youtube <liked|watch-later> [--media-types videos] [--browser chrome] [--limit <n>|--all] [--json]")
-        print("  clipbox sync youtube <liked|watch-later> [--media-types videos] [--browser chrome] [--limit <n>|--all] [--dry-run] [--output <folder>] [--json]")
-        print("  clipbox session list | check --browser <browser> [--profile <directory>] [--container <name>] [--username <expected-handle>]")
-        print("  X scan/sync also accept --profile <directory> and --container <Firefox container>.")
-        print("  clipbox scan x bookmarks [--media-types videos,photos,animated] [--browser chrome] [--limit <n>|--all] [--json]")
-        print("  clipbox scan x likes --username <handle> [--media-types videos,photos,animated] [--browser chrome] [--limit <n>|--all] [--json]")
-        print("  clipbox scan x all --username <handle> [--media-types videos,photos,animated] [--browser chrome] [--limit <n>|--all] [--json]")
-        print("  clipbox sync x <bookmarks|likes|all> [--username <handle>] [--media-types videos,photos,animated] [--browser chrome] [--limit <n>|--all] [--dry-run] [--output <folder>] [--json]")
-        print("  clipbox scan instagram saved [--browser chrome] [--profile <name>] [--limit <n>|--all] [--json]")
-        print("  clipbox sync instagram saved [--browser chrome] [--profile <name>] [--limit <n>|--all] [--dry-run] [--output <folder>] [--json]")
-        print("  clipbox history [--limit <n>] [--json]")
-        print("  clipbox history export <file.{jsonl|csv|xlsx}> [--format <format>] [--json]")
-        print("  clipbox history import <file.{jsonl|csv}> [--format <format>] [--json]")
-        print("  clipbox backup create [file.clipboxbackup] [--json]")
-        print("  clipbox backup restore <file.clipboxbackup> [--restore-preferences] [--json]")
-        print("  clipbox adapter init <id>")
-        print("  clipbox adapter list [--json]")
-        print("  clipbox adapter path <id>")
-        print("  clipbox adapter doctor <id> [--json]")
-        print("  clipbox adapter scan <id> <collection> [--browser safari] [--limit <n>|--all] [--json]")
-        print("  clipbox adapter sync <id> <collection> [--browser safari] [--limit <n>|--all] [--dry-run] [--output <folder>] [--json]")
-        print("  clipbox config show [--json]")
-        print("  clipbox config output <folder|default>")
-        print("  clipbox --version")
+    private static func printHelp(command: String? = nil, subcommand: String? = nil) {
+        let usage = [
+            "clipbox status [--json]",
+            "clipbox gui",
+            "clipbox paths [--json]",
+            "clipbox formats <url> [--browser <browser>] [--json]",
+            "clipbox download <url> [--output <folder>] [--browser <browser>] [--force] [--json]",
+            "clipbox scan youtube <liked|watch-later> [--media-types videos] [--browser chrome] [--limit <n>|--all] [--json]",
+            "clipbox sync youtube <liked|watch-later> [--media-types videos] [--browser chrome] [--limit <n>|--all] [--dry-run] [--output <folder>] [--json]",
+            "clipbox session list [--json]",
+            "clipbox session check [--browser <browser>] [--profile <directory>] [--container <name>] [--username <expected-handle>] [--json]",
+            "clipbox scan x bookmarks [--media-types videos,photos,animated] [--browser chrome] [--limit <n>|--all] [--json]",
+            "clipbox scan x likes --username <handle> [--media-types videos,photos,animated] [--browser chrome] [--limit <n>|--all] [--json]",
+            "clipbox scan x all --username <handle> [--media-types videos,photos,animated] [--browser chrome] [--limit <n>|--all] [--json]",
+            "clipbox sync x <bookmarks|likes|all> [--username <handle>] [--media-types videos,photos,animated] [--browser chrome] [--limit <n>|--all] [--dry-run] [--output <folder>] [--json]",
+            "clipbox scan instagram saved [--browser chrome] [--profile <name>] [--limit <n>|--all] [--json]",
+            "clipbox sync instagram saved [--browser chrome] [--profile <name>] [--limit <n>|--all] [--dry-run] [--output <folder>] [--json]",
+            "clipbox history [--limit <n>] [--json]",
+            "clipbox history export <file.{jsonl|csv|xlsx}> [--format <format>] [--json]",
+            "clipbox history import <file.{jsonl|csv}> [--format <format>] [--json]",
+            "clipbox backup create [file.clipboxbackup] [--json]",
+            "clipbox backup restore <file.clipboxbackup> [--restore-preferences] [--json]",
+            "clipbox adapter init <id>",
+            "clipbox adapter list [--json]",
+            "clipbox adapter path <id>",
+            "clipbox adapter doctor <id> [--json]",
+            "clipbox adapter scan <id> <collection> [--browser safari] [--limit <n>|--all] [--json]",
+            "clipbox adapter sync <id> <collection> [--browser safari] [--limit <n>|--all] [--dry-run] [--output <folder>] [--json]",
+            "clipbox config show [--json]",
+            "clipbox config output <folder|default>",
+            "clipbox --version",
+        ]
+        var matching = usage
+        if let command, !["help", "--help", "-h"].contains(command) {
+            let prefix = "clipbox " + command
+            matching = usage.filter { $0 == prefix || $0.hasPrefix(prefix + " ") }
+            if let subcommand {
+                let nestedPrefix = prefix + " " + subcommand
+                let nested = matching.filter { $0 == nestedPrefix || $0.hasPrefix(nestedPrefix + " ") }
+                if !nested.isEmpty { matching = nested }
+            }
+        }
+        print("ClipBox \(clipBoxVersion) — Native macOS media download and archive toolkit.")
+        print("\nUsage:")
+        for line in matching.isEmpty ? usage : matching {
+            print("  \(line)")
+        }
+        if command == nil || command == "scan" || command == "sync" {
+            print("  X scan/sync also accept --profile <directory> and --container <Firefox container>.")
+        }
     }
 
     private static func removeFlag(_ flag: String, from arguments: inout [String]) -> Bool {
@@ -743,13 +815,22 @@ struct ClipBoxCommand {
             return nil
         }
         let valueIndex = arguments.index(after: index)
-        guard valueIndex < arguments.endIndex else {
+        guard valueIndex < arguments.endIndex, !arguments[valueIndex].hasPrefix("-") else {
             throw CLIError.missingArgument("\(option) requires a value")
         }
         let value = arguments[valueIndex]
         arguments.remove(at: valueIndex)
         arguments.remove(at: index)
         return value
+    }
+
+    private static func validatePositionals(_ arguments: [String], atMost count: Int) throws {
+        if let option = arguments.first(where: { $0.hasPrefix("-") }) {
+            throw CLIError.invalidArgument("Unexpected option: \(option)")
+        }
+        if arguments.count > count {
+            throw CLIError.invalidArgument("Unexpected arguments: \(arguments.dropFirst(count).joined(separator: " "))")
+        }
     }
 
     private static func parseBrowser(_ rawValue: String?) throws -> BrowserCookieSource? {
@@ -914,6 +995,26 @@ struct ClipBoxCommand {
             throw CLIError.invalidArgument("macOS could not open \(appURL.path)")
         }
     }
+}
+
+private struct ListedSession: Encodable {
+    let browser: BrowserCookieSource
+    let profile: String?
+    let container: String?
+    let label: String
+}
+
+private struct SessionListPayload: Encodable {
+    let sessions: [ListedSession]
+    let issues: [BrowserSessionDiscoveryIssue]
+}
+
+private struct SessionCheckPayload: Encodable {
+    let session: BrowserSession
+    let connected: Bool
+    let message: String
+    let failureKind: String?
+    let checkedAt: Date
 }
 
 private struct StatusPayload: Codable {
